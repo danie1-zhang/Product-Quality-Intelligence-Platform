@@ -1,4 +1,22 @@
-from quality_intelligence.data.ingest import is_headphone_product, generate_review_id
+import pytest
+
+from quality_intelligence.data.ingest import is_headphone_product, generate_review_id, transform_review
+
+
+@pytest.fixture
+def raw_review():
+    return {
+        "rating": 5.0,
+        "title": "Excellent sound and battery life",
+        "text": "These headphones sound great and last all day.",
+        "parent_asin": "B0CHEADPHN",
+        "asin": "B0CVARIANT1",
+        "user_id": "AGX7EXAMPLEUSER",
+        "timestamp": 1711929600000,
+        "helpful_vote": 12,
+        "verified_purchase": True,
+        "images": [{"small_image_url": "https://example.com/review-image.jpg"}],
+    }
 
 # is_headphone_product tests
 def test_categories_is_none():
@@ -41,3 +59,43 @@ def test_one_character_change_in_review_text_produces_different_id():
     id1 = generate_review_id(parent_asin, user_id, timestamp, "ok")
     id2 = generate_review_id(parent_asin, user_id, timestamp, "oh")
     assert id1 != id2
+
+
+# transform_review tests
+def test_transform_review_output_has_expected_keys(raw_review):
+    transformed = transform_review(raw_review)
+    assert set(transformed) == {
+        "review_id",
+        "product_id",
+        "review_title",
+        "review_text",
+        "rating",
+        "timestamp",
+        "helpful_votes",
+        "verified_purchase",
+    }
+
+def test_transform_review_maps_raw_fields_to_canonical_fields(raw_review):
+    transformed = transform_review(raw_review)
+    assert transformed["product_id"] == raw_review["parent_asin"]
+    assert transformed["review_title"] == raw_review["title"]
+    assert transformed["review_text"] == raw_review["text"]
+    assert transformed["rating"] == raw_review["rating"]
+    assert transformed["timestamp"] == raw_review["timestamp"]
+    assert transformed["helpful_votes"] == raw_review["helpful_vote"]
+    assert transformed["verified_purchase"] == raw_review["verified_purchase"]
+
+def test_transform_review_generates_expected_review_id(raw_review):
+    transformed = transform_review(raw_review)
+    expected_id = generate_review_id(
+        raw_review["parent_asin"],
+        raw_review["user_id"],
+        raw_review["timestamp"],
+        raw_review["text"],
+    )
+    assert transformed["review_id"] == expected_id
+
+def test_transform_review_excludes_extra_raw_fields(raw_review):
+    transformed = transform_review(raw_review)
+    assert "images" not in transformed
+    assert "asin" not in transformed
