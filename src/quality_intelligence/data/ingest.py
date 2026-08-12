@@ -1,6 +1,62 @@
 from typing import Any
 import json
 import hashlib
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+
+CANONICAL_REVIEW_SCHEMA = pa.schema([
+    ("review_id", pa.string()),
+    ("product_id", pa.string()),
+    ("review_title", pa.string()),
+    ("review_text", pa.string()),
+    ("rating", pa.float64()),
+    ("timestamp", pa.int64()),
+    ("helpful_votes", pa.int64()),
+    ("verified_purchase", pa.bool_())
+])
+
+
+def rows_to_table(rows: list[dict]) -> pa.Table:
+    return pa.Table.from_pylist(rows, schema=CANONICAL_REVIEW_SCHEMA)
+
+
+def write_rows_to_parquet(rows, output_path: str, batch_size: int = 5000):
+    """
+    Write canonical review rows to Parquet in bounded batches.
+    """
+    buffer = []
+
+    with pq.ParquetWriter(output_path, CANONICAL_REVIEW_SCHEMA) as writer:
+        for row in rows:
+            buffer.append(row)
+
+            if len(buffer) == batch_size:
+                table = rows_to_table(buffer)
+                writer.write_table(table)
+                buffer.clear()
+
+        if buffer:
+            table = rows_to_table(buffer)
+            writer.write_table(table)
+
+
+def iter_parquet_rows(fs, parquet_paths, batch_size=5000):
+    """
+    Yield raw review rows lazily from one or more Parquet files.
+    """
+    for path in parquet_paths:
+        with fs.open(path, "rb") as f:
+            parquet_file = pq.ParquetFile(f)
+
+            for batch in parquet_file.iter_batches(batch_size=batch_size):
+                rows = batch.to_pylist()
+                for row in rows:
+                    yield row
+
+
+
+
 
 
 def is_headphone_product(categories: list[str] | None) -> bool:
@@ -8,10 +64,8 @@ def is_headphone_product(categories: list[str] | None) -> bool:
     This function takes in a the categories a product is associated with and returns True if the product is a headphones
     or earbuds product and returns False otherwise.
     """
-
     if not categories:
         return False
-
     return "Headphones & Earbuds" in categories
 
 
@@ -19,7 +73,6 @@ def generate_review_id(parent_asin: str, user_id: str, timestamp: int, review_te
     """
     Generate a deterministic review ID from stable source fields.
     """
-    
     source_fields = [parent_asin, user_id, timestamp, review_text]
     s = json.dumps(source_fields).encode("utf-8")
     return hashlib.sha256(s).hexdigest()

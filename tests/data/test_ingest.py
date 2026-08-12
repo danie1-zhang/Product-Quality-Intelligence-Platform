@@ -1,11 +1,18 @@
 import pytest
+import pyarrow as pa
+import pyarrow.parquet as pq
+from fsspec.implementations.local import LocalFileSystem
 
 from quality_intelligence.data.ingest import (
+    CANONICAL_REVIEW_SCHEMA,
     filter_and_transform_rows,
     generate_review_id,
     get_headphone_product_ids,
     is_headphone_product,
+    iter_parquet_rows,
+    rows_to_table,
     transform_review,
+    write_rows_to_parquet,
 )
 
 
@@ -23,6 +30,18 @@ def raw_review():
         "verified_purchase": True,
         "images": [{"small_image_url": "https://example.com/review-image.jpg"}],
     }
+
+
+@pytest.fixture
+def local_fs():
+    return LocalFileSystem()
+
+
+def make_canonical_reviews(raw_review, count):
+    return [
+        transform_review({**raw_review, "text": f"Review number {number}"})
+        for number in range(1, count + 1)
+    ]
 
 # is_headphone_product tests
 def test_categories_is_none():
@@ -158,4 +177,77 @@ def test_filter_and_transform_rows_yields_canonical_schema(raw_review):
 
 def test_filter_and_transform_rows_with_empty_rows_yields_nothing():
     results = list(filter_and_transform_rows([], {"B0CHEADPHN"}))
+    assert results == []
+
+
+# rows_to_table tests
+def test_rows_to_table_uses_canonical_review_schema(raw_review):
+    canonical_review = transform_review(raw_review)
+    table = rows_to_table([canonical_review])
+    assert table.schema == CANONICAL_REVIEW_SCHEMA
+
+def test_rows_to_table_preserves_review_values(raw_review):
+    canonical_review = transform_review(raw_review)
+    table = rows_to_table([canonical_review])
+    assert table.to_pylist() == [canonical_review]
+
+
+# write_rows_to_parquet tests
+def test_write_rows_to_parquet_creates_readable_file_with_canonical_schema(raw_review, tmp_path):
+    canonical_review = transform_review(raw_review)
+    output_path = tmp_path / "reviews.parquet"
+
+    write_rows_to_parquet([canonical_review], output_path)
+
+    table = pq.read_table(output_path)
+    assert table.schema == CANONICAL_REVIEW_SCHEMA
+
+def test_write_rows_to_parquet_writes_all_batches_and_final_partial_batch(raw_review, tmp_path):
+    canonical_reviews = make_canonical_reviews(raw_review, 3)
+    output_path = tmp_path / "batched-reviews.parquet"
+
+    write_rows_to_parquet(iter(canonical_reviews), output_path, batch_size=2)
+
+    table = pq.read_table(output_path)
+    assert table.to_pylist() == canonical_reviews
+
+
+# iter_parquet_rows tests
+def test_iter_parquet_rows_yields_all_rows(raw_review, tmp_path, local_fs):
+    canonical_reviews = make_canonical_reviews(raw_review, 3)
+    parquet_path = tmp_path / "reviews.parquet"
+    pq.write_table(rows_to_table(canonical_reviews), parquet_path)
+
+    results = list(iter_parquet_rows(local_fs, [parquet_path]))
+
+    assert results == canonical_reviews
+
+def test_iter_parquet_rows_yields_rows_across_record_batches(raw_review, tmp_path, local_fs):
+    canonical_reviews = make_canonical_reviews(raw_review, 5)
+    parquet_path = tmp_path / "batched-reviews.parquet"
+    pq.write_table(rows_to_table(canonical_reviews), parquet_path)
+
+    results = list(iter_parquet_rows(local_fs, [parquet_path], batch_size=2))
+
+    assert results == canonical_reviews
+
+def test_iter_parquet_rows_yields_rows_from_multiple_files(raw_review, tmp_path, local_fs):
+    first_reviews = make_canonical_reviews(raw_review, 2)
+    second_reviews = make_canonical_reviews({**raw_review, "user_id": "SECONDUSER"}, 2)
+    first_path = tmp_path / "first.parquet"
+    second_path = tmp_path / "second.parquet"
+    pq.write_table(rows_to_table(first_reviews), first_path)
+    pq.write_table(rows_to_table(second_reviews), second_path)
+
+    results = list(iter_parquet_rows(local_fs, [first_path, second_path]))
+
+    assert results == first_reviews + second_reviews
+
+def test_iter_parquet_rows_empty_file_yields_no_rows(tmp_path, local_fs):
+    parquet_path = tmp_path / "empty.parquet"
+    empty_table = pa.Table.from_pylist([], schema=CANONICAL_REVIEW_SCHEMA)
+    pq.write_table(empty_table, parquet_path)
+
+    results = list(iter_parquet_rows(local_fs, [parquet_path]))
+
     assert results == []
