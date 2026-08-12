@@ -1,21 +1,21 @@
 from quality_intelligence.data.ingest import is_headphone_product
 
-def test1():
+def categories_is_none():
     categories = None
     assert not is_headphone_product(categories) 
 
-def test2():
+def categories_is_empty():
     categories = []
     assert not is_headphone_product(categories) 
 
-def test3():
+def categories_does_not_contain_headphones_earbuds():
     categories = ["Electronics"]
     assert not is_headphone_product(categories)
 
-def test4():
+def categories_contains_headphones_earbuds():
     categories = ["Headphones, Earbuds & Accessories", "Headphones & Earbuds", "Electronics"]
     assert is_headphone_product(categories)
 
-def test5():
+def categories_contains_similar():
     categories = ["Headphones, Earbuds & Accessories"]
     assert not is_headphone_product(categories)
