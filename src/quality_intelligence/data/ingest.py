@@ -61,3 +61,12 @@ def get_headphone_product_ids(metadata_rows) -> set[str]:
             headphone_ids.add(row["parent_asin"])
     return headphone_ids
 
+
+def filter_and_transform_rows(review_rows, headphone_ids: set[str]):
+    """
+    Filter reviews to headphone products and lazily yield transformed rows.
+    """
+    for review in review_rows:
+        if review["parent_asin"] in headphone_ids:
+            yield transform_review(review)
+

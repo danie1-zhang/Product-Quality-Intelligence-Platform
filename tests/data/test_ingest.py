@@ -1,6 +1,7 @@
 import pytest
 
 from quality_intelligence.data.ingest import (
+    filter_and_transform_rows,
     generate_review_id,
     get_headphone_product_ids,
     is_headphone_product,
@@ -131,3 +132,30 @@ def test_get_headphone_product_ids_excludes_none_parent_asin():
         {"parent_asin": None, "categories": ["Headphones & Earbuds"]},
     ]
     assert get_headphone_product_ids(metadata_rows) == set()
+
+
+# filter_and_transform_rows tests
+def test_filter_and_transform_rows_yields_matching_review(raw_review):
+    results = list(filter_and_transform_rows([raw_review], {raw_review["parent_asin"]}))
+    assert len(results) == 1
+
+def test_filter_and_transform_rows_skips_non_matching_review(raw_review):
+    results = list(filter_and_transform_rows([raw_review], {"B0COTHER"}))
+    assert results == []
+
+def test_filter_and_transform_rows_yields_canonical_schema(raw_review):
+    results = list(filter_and_transform_rows([raw_review], {raw_review["parent_asin"]}))
+    assert set(results[0]) == {
+        "review_id",
+        "product_id",
+        "review_title",
+        "review_text",
+        "rating",
+        "timestamp",
+        "helpful_votes",
+        "verified_purchase",
+    }
+
+def test_filter_and_transform_rows_with_empty_rows_yields_nothing():
+    results = list(filter_and_transform_rows([], {"B0CHEADPHN"}))
+    assert results == []
