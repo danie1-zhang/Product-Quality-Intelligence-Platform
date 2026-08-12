@@ -50,3 +50,14 @@ def transform_review(raw_review: dict) -> dict:
         "verified_purchase": verified_purchase
     }
 
+
+def get_headphone_product_ids(metadata_rows) -> set[str]:
+    """
+    Return the unique parent ASINs for valid headphone and earbud products.
+    """
+    headphone_ids = set()
+    for row in metadata_rows:
+        if row["parent_asin"] and is_headphone_product(row["categories"]):
+            headphone_ids.add(row["parent_asin"])
+    return headphone_ids
+

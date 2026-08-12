@@ -1,6 +1,11 @@
 import pytest
 
-from quality_intelligence.data.ingest import is_headphone_product, generate_review_id, transform_review
+from quality_intelligence.data.ingest import (
+    generate_review_id,
+    get_headphone_product_ids,
+    is_headphone_product,
+    transform_review,
+)
 
 
 @pytest.fixture
@@ -99,3 +104,30 @@ def test_transform_review_excludes_extra_raw_fields(raw_review):
     transformed = transform_review(raw_review)
     assert "images" not in transformed
     assert "asin" not in transformed
+
+
+# get_headphone_product_ids tests
+def test_get_headphone_product_ids_includes_headphone_product():
+    metadata_rows = [
+        {"parent_asin": "B0CHEADPHN", "categories": ["Electronics", "Headphones & Earbuds"]},
+    ]
+    assert get_headphone_product_ids(metadata_rows) == {"B0CHEADPHN"}
+
+def test_get_headphone_product_ids_excludes_non_headphone_product():
+    metadata_rows = [
+        {"parent_asin": "B0CSPEAKER", "categories": ["Electronics", "Portable Speakers"]},
+    ]
+    assert get_headphone_product_ids(metadata_rows) == set()
+
+def test_get_headphone_product_ids_removes_duplicate_parent_asins():
+    metadata_rows = [
+        {"parent_asin": "B0CHEADPHN", "categories": ["Headphones & Earbuds"]},
+        {"parent_asin": "B0CHEADPHN", "categories": ["Electronics", "Headphones & Earbuds"]},
+    ]
+    assert get_headphone_product_ids(metadata_rows) == {"B0CHEADPHN"}
+
+def test_get_headphone_product_ids_excludes_none_parent_asin():
+    metadata_rows = [
+        {"parent_asin": None, "categories": ["Headphones & Earbuds"]},
+    ]
+    assert get_headphone_product_ids(metadata_rows) == set()
