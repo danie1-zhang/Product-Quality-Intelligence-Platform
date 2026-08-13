@@ -1,20 +1,21 @@
-from typing import Any
-import json
 import hashlib
+import json
+
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-
-CANONICAL_REVIEW_SCHEMA = pa.schema([
-    ("review_id", pa.string()),
-    ("product_id", pa.string()),
-    ("review_title", pa.string()),
-    ("review_text", pa.string()),
-    ("rating", pa.float64()),
-    ("timestamp", pa.int64()),
-    ("helpful_votes", pa.int64()),
-    ("verified_purchase", pa.bool_())
-])
+CANONICAL_REVIEW_SCHEMA = pa.schema(
+    [
+        ("review_id", pa.string()),
+        ("product_id", pa.string()),
+        ("review_title", pa.string()),
+        ("review_text", pa.string()),
+        ("rating", pa.float64()),
+        ("timestamp", pa.int64()),
+        ("helpful_votes", pa.int64()),
+        ("verified_purchase", pa.bool_()),
+    ]
+)
 
 
 def rows_to_table(rows: list[dict]) -> pa.Table:
@@ -50,13 +51,23 @@ def iter_parquet_rows(fs, parquet_paths, batch_size=5000):
             parquet_file = pq.ParquetFile(f)
 
             for batch in parquet_file.iter_batches(batch_size=batch_size):
-                rows = batch.to_pylist()
-                for row in rows:
-                    yield row
+                yield from batch.to_pylist()
 
 
-
-
+def ingest_headphone_reviews(
+    fs,
+    metadata_paths,
+    review_paths,
+    output_path: str,
+    read_batch_size: int = 5000,
+    write_batch_size: int = 5000,
+):
+    """Ingest headphone reviews from remote Parquet inputs into canonical output."""
+    metadata_rows = iter_parquet_rows(fs, metadata_paths, batch_size=read_batch_size)
+    headphone_ids = get_headphone_product_ids(metadata_rows)
+    review_rows = iter_parquet_rows(fs, review_paths, batch_size=read_batch_size)
+    canonical_rows = filter_and_transform_rows(review_rows, headphone_ids)
+    write_rows_to_parquet(canonical_rows, output_path, batch_size=write_batch_size)
 
 
 def is_headphone_product(categories: list[str] | None) -> bool:
@@ -100,7 +111,7 @@ def transform_review(raw_review: dict) -> dict:
         "rating": rating,
         "timestamp": timestamp,
         "helpful_votes": helpful_votes,
-        "verified_purchase": verified_purchase
+        "verified_purchase": verified_purchase,
     }
 
 
@@ -122,4 +133,3 @@ def filter_and_transform_rows(review_rows, headphone_ids: set[str]):
     for review in review_rows:
         if review["parent_asin"] in headphone_ids:
             yield transform_review(review)
-

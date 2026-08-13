@@ -1,2 +1,1 @@
 """Product quality intelligence package."""
-
