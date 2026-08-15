@@ -39,7 +39,6 @@ BUILD_QUALITY_PATTERNS = (
     "hinge broke",
     "ear pad fell off",
     "fell apart",
-    "broke after",
     "wire broke",
     "one earbud broke",
 )
@@ -51,18 +50,21 @@ SHIPPING_PATTERNS = (
     "damaged box",
     "box was crushed",
     "missing packaging",
-    "box was opened",
 )
 
 
 FIT_COMPATIBILITY_PATTERNS = (
     "doesn't fit",
-    "falls out",
+    "keeps falling out",
+    "keep falling out",
+    "start falling out",
+    "starts falling out",
     "too tight",
     "too small",
     "too loose",
     "incompatible with",
     "not compatible with",
+    "don't fit",
 )
 
 
