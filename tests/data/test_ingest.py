@@ -10,6 +10,8 @@ from quality_intelligence.data.ingest import (
     get_headphone_product_ids,
     ingest_headphone_reviews,
     is_headphone_product,
+    is_headphone_title,
+    is_standard_asin,
     iter_parquet_rows,
     rows_to_table,
     transform_review,
@@ -69,6 +71,76 @@ def test_categories_contains_headphones_earbuds():
 def test_categories_contains_similar():
     categories = ["Headphones, Earbuds & Accessories"]
     assert not is_headphone_product(categories)
+
+
+# is_headphone_title tests
+def test_headphone_title_is_none():
+    assert not is_headphone_title(None)
+
+
+def test_headphone_title_is_empty():
+    assert not is_headphone_title("")
+
+
+def test_headphone_title_is_unrelated():
+    assert not is_headphone_title("Portable Bluetooth Speaker")
+
+
+def test_headphone_title_contains_headphones():
+    assert is_headphone_title("Sony Wireless Headphones")
+
+
+def test_headphone_title_contains_earbuds():
+    assert is_headphone_title("Wireless Earbuds with Charging Case")
+
+
+def test_headphone_title_contains_earphones():
+    assert is_headphone_title("Wired Earphones with Microphone")
+
+
+def test_headphone_title_contains_headset():
+    assert is_headphone_title("Gaming Headset")
+
+
+def test_headphone_title_matching_is_case_insensitive():
+    assert is_headphone_title("WIRELESS HEADPHONES")
+
+
+def test_headphone_title_matches_hyphenated_form():
+    assert is_headphone_title("In-Ear Monitor Headphones")
+
+
+# is_standard_asin tests
+def test_standard_asin_starts_with_uppercase_b():
+    assert is_standard_asin("B0CHEADPHN")
+
+
+def test_standard_asin_starts_with_lowercase_b():
+    assert is_standard_asin("b0cheadphn")
+
+
+def test_standard_asin_rejects_non_b_prefix():
+    assert not is_standard_asin("X0CHEADPHN")
+
+
+def test_standard_asin_rejects_empty_string():
+    assert not is_standard_asin("")
+
+
+def test_standard_asin_rejects_none():
+    assert not is_standard_asin(None)
+
+
+def test_standard_asin_rejects_too_short_value():
+    assert not is_standard_asin("B123")
+
+
+def test_standard_asin_rejects_too_long_value():
+    assert not is_standard_asin("B1234567890")
+
+
+def test_standard_asin_rejects_non_alphanumeric_value():
+    assert not is_standard_asin("B1234_6789")
 
 
 # generate_review_id tests
@@ -138,33 +210,139 @@ def test_transform_review_excludes_extra_raw_fields(raw_review):
 
 
 # get_headphone_product_ids tests
-def test_get_headphone_product_ids_includes_headphone_product():
+def test_get_headphone_product_ids_includes_valid_category_and_title():
     metadata_rows = [
-        {"parent_asin": "B0CHEADPHN", "categories": ["Electronics", "Headphones & Earbuds"]},
+        {
+            "parent_asin": "B0CHEADPHN",
+            "categories": ["Electronics", "Headphones & Earbuds"],
+            "title": "Sony Wireless Headphones",
+        },
     ]
     assert get_headphone_product_ids(metadata_rows) == {"B0CHEADPHN"}
 
 
-def test_get_headphone_product_ids_excludes_non_headphone_product():
+def test_get_headphone_product_ids_excludes_unrelated_title():
     metadata_rows = [
-        {"parent_asin": "B0CSPEAKER", "categories": ["Electronics", "Portable Speakers"]},
+        {
+            "parent_asin": "B0CSPEAKER",
+            "categories": ["Electronics", "Headphones & Earbuds"],
+            "title": "Portable Bluetooth Speaker",
+        },
     ]
     assert get_headphone_product_ids(metadata_rows) == set()
 
 
-def test_get_headphone_product_ids_removes_duplicate_parent_asins():
+def test_get_headphone_product_ids_excludes_wrong_category():
     metadata_rows = [
-        {"parent_asin": "B0CHEADPHN", "categories": ["Headphones & Earbuds"]},
-        {"parent_asin": "B0CHEADPHN", "categories": ["Electronics", "Headphones & Earbuds"]},
+        {
+            "parent_asin": "B0CHEADPHN",
+            "categories": ["Electronics", "Portable Speakers"],
+            "title": "Sony Wireless Headphones",
+        },
+    ]
+    assert get_headphone_product_ids(metadata_rows) == set()
+
+
+def test_get_headphone_product_ids_excludes_missing_parent_asin():
+    metadata_rows = [
+        {
+            "parent_asin": None,
+            "categories": ["Headphones & Earbuds"],
+            "title": "Wireless Earbuds",
+        },
+    ]
+    assert get_headphone_product_ids(metadata_rows) == set()
+
+
+def test_get_headphone_product_ids_excludes_nonstandard_parent_asin():
+    metadata_rows = [
+        {
+            "parent_asin": "X0CHEADPHN",
+            "categories": ["Headphones & Earbuds"],
+            "title": "Wireless Headphones",
+        },
+    ]
+    assert get_headphone_product_ids(metadata_rows) == set()
+
+
+def test_get_headphone_product_ids_returns_only_valid_products():
+    metadata_rows = [
+        {
+            "parent_asin": "B000000001",
+            "categories": ["Headphones & Earbuds"],
+            "title": "Wired Earphones",
+        },
+        {
+            "parent_asin": "B000000002",
+            "categories": ["Headphones & Earbuds"],
+            "title": "Daily Planner",
+        },
+        {
+            "parent_asin": "B000000003",
+            "categories": ["Books"],
+            "title": "Gaming Headset",
+        },
+    ]
+    assert get_headphone_product_ids(metadata_rows) == {"B000000001"}
+
+
+def test_get_headphone_product_ids_removes_duplicate_valid_parent_asins():
+    metadata_rows = [
+        {
+            "parent_asin": "B0CHEADPHN",
+            "categories": ["Headphones & Earbuds"],
+            "title": "Wireless Headphones",
+        },
+        {
+            "parent_asin": "B0CHEADPHN",
+            "categories": ["Electronics", "Headphones & Earbuds"],
+            "title": "Wireless Headphones",
+        },
     ]
     assert get_headphone_product_ids(metadata_rows) == {"B0CHEADPHN"}
 
 
-def test_get_headphone_product_ids_excludes_none_parent_asin():
+@pytest.mark.parametrize(
+    "title",
+    [
+        (
+            "Rolex GMT-Master: Collecting Wristwatches "
+            "(Rolex GMT-Master: Collezionare Orologi Da Polso)"
+        ),
+        (
+            "Jesus Calling: Enjoying Peace in His Presence - 365 Daily Devotional - "
+            "Large Deluxe Edition - Purple Cover, Imitation Leather"
+        ),
+        (
+            'Goldistock "Washington D.C." Eco-friendly 2018 Large Wall Calendar - '
+            '12" x 24" (Open) - Thick & Sturdy Paper - Feauting Beautiful Historic Landmarks'
+        ),
+    ],
+)
+def test_get_headphone_product_ids_rejects_noisy_metadata_titles(title):
     metadata_rows = [
-        {"parent_asin": None, "categories": ["Headphones & Earbuds"]},
+        {
+            "parent_asin": "B000000004",
+            "categories": ["Headphones & Earbuds"],
+            "title": title,
+        },
     ]
+
     assert get_headphone_product_ids(metadata_rows) == set()
+
+
+def test_get_headphone_product_ids_accepts_real_headphone_title():
+    metadata_rows = [
+        {
+            "parent_asin": "BREALHEADP",
+            "categories": ["Headphones & Earbuds"],
+            "title": "ebasy Ear Buds Earphones in Ear Headphones Wired Earbuds with Stereo "
+            "and Volume Control Waterproof Metal Wired Earphone for Earphone Earbud Mp3 "
+            "Players Tablet Laptop 3.5mm-Blue",
+        },
+    ]
+
+    assert get_headphone_product_ids(metadata_rows) == {"BREALHEADP"}
 
 
 # filter_and_transform_rows tests
@@ -231,6 +409,30 @@ def test_write_rows_to_parquet_writes_all_batches_and_final_partial_batch(raw_re
     assert table.to_pylist() == canonical_reviews
 
 
+def test_write_rows_to_parquet_promotes_partial_file_atomically(raw_review, tmp_path):
+    output_path = tmp_path / "reviews.parquet"
+
+    write_rows_to_parquet([transform_review(raw_review)], output_path)
+
+    assert output_path.exists()
+    assert not (tmp_path / "reviews.parquet.part").exists()
+
+
+def test_write_rows_to_parquet_preserves_existing_output_on_failure(raw_review, tmp_path):
+    output_path = tmp_path / "reviews.parquet"
+    existing_review = transform_review(raw_review)
+    write_rows_to_parquet([existing_review], output_path)
+
+    def failing_rows():
+        yield transform_review({**raw_review, "text": "replacement"})
+        raise RuntimeError("interrupted")
+
+    with pytest.raises(RuntimeError, match="interrupted"):
+        write_rows_to_parquet(failing_rows(), output_path)
+
+    assert pq.read_table(output_path).to_pylist() == [existing_review]
+
+
 # iter_parquet_rows tests
 def test_iter_parquet_rows_yields_all_rows(raw_review, tmp_path, local_fs):
     canonical_reviews = make_canonical_reviews(raw_review, 3)
@@ -284,8 +486,13 @@ def test_ingest_headphone_reviews_filters_and_transforms_end_to_end(raw_review, 
         {
             "parent_asin": raw_review["parent_asin"],
             "categories": ["Electronics", "Headphones & Earbuds"],
+            "title": "Wireless Headphones",
         },
-        {"parent_asin": "B0CSPEAKER", "categories": ["Electronics", "Portable Speakers"]},
+        {
+            "parent_asin": "B0CSPEAKER",
+            "categories": ["Electronics", "Portable Speakers"],
+            "title": "Portable Bluetooth Speaker",
+        },
     ]
     non_headphone_review = {
         **raw_review,

@@ -1,8 +1,14 @@
 import hashlib
 import json
+import os
+import re
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from pathlib import Path
+from typing import Any
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+from fsspec import AbstractFileSystem
 
 CANONICAL_REVIEW_SCHEMA = pa.schema(
     [
@@ -17,18 +23,44 @@ CANONICAL_REVIEW_SCHEMA = pa.schema(
     ]
 )
 
+HEADPHONE_TITLE_TERMS = [
+    "headphone",
+    "headphones",
+    "earbud",
+    "earbuds",
+    "earphone",
+    "earphones",
+    "headset",
+    "in-ear",
+    "over-ear",
+    "on-ear",
+]
+HEADPHONE_TITLE_PATTERN = re.compile(
+    rf"(?<![A-Za-z0-9])(?:{'|'.join(map(re.escape, HEADPHONE_TITLE_TERMS))})(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+STANDARD_ASIN_PATTERN = re.compile(r"^B[A-Z0-9]{9}$", re.IGNORECASE)
 
-def rows_to_table(rows: list[dict]) -> pa.Table:
+
+def rows_to_table(rows: Sequence[Mapping[str, Any]]) -> pa.Table:
+    """Convert canonical review mappings to a table with the canonical schema."""
     return pa.Table.from_pylist(rows, schema=CANONICAL_REVIEW_SCHEMA)
 
 
-def write_rows_to_parquet(rows, output_path: str, batch_size: int = 5000):
+def write_rows_to_parquet(
+    rows: Iterable[Mapping[str, Any]],
+    output_path: str | Path,
+    batch_size: int = 5000,
+) -> None:
     """
     Write canonical review rows to Parquet in bounded batches.
     """
-    buffer = []
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    partial_path = output_path.with_name(f"{output_path.name}.part")
+    buffer: list[Mapping[str, Any]] = []
 
-    with pq.ParquetWriter(output_path, CANONICAL_REVIEW_SCHEMA) as writer:
+    with pq.ParquetWriter(partial_path, CANONICAL_REVIEW_SCHEMA) as writer:
         for row in rows:
             buffer.append(row)
 
@@ -41,8 +73,14 @@ def write_rows_to_parquet(rows, output_path: str, batch_size: int = 5000):
             table = rows_to_table(buffer)
             writer.write_table(table)
 
+    os.replace(partial_path, output_path)
 
-def iter_parquet_rows(fs, parquet_paths, batch_size=5000):
+
+def iter_parquet_rows(
+    fs: AbstractFileSystem,
+    parquet_paths: Iterable[str | Path],
+    batch_size: int = 5000,
+) -> Iterator[dict[str, Any]]:
     """
     Yield raw review rows lazily from one or more Parquet files.
     """
@@ -55,14 +93,16 @@ def iter_parquet_rows(fs, parquet_paths, batch_size=5000):
 
 
 def ingest_headphone_reviews(
-    fs,
-    metadata_paths,
-    review_paths,
-    output_path: str,
+    fs: AbstractFileSystem,
+    metadata_paths: Iterable[str | Path],
+    review_paths: Iterable[str | Path],
+    output_path: str | Path,
     read_batch_size: int = 5000,
     write_batch_size: int = 5000,
-):
-    """Ingest headphone reviews from remote Parquet inputs into canonical output."""
+) -> None:
+    """
+    Ingest metadata and review Parquet files into atomic canonical output.
+    """
     metadata_rows = iter_parquet_rows(fs, metadata_paths, batch_size=read_batch_size)
     headphone_ids = get_headphone_product_ids(metadata_rows)
     review_rows = iter_parquet_rows(fs, review_paths, batch_size=read_batch_size)
@@ -72,8 +112,7 @@ def ingest_headphone_reviews(
 
 def is_headphone_product(categories: list[str] | None) -> bool:
     """
-    This function takes in a the categories a product is associated with and returns True if the product is a headphones
-    or earbuds product and returns False otherwise.
+    Return whether categories contain the exact headphone domain category.
     """
     if not categories:
         return False
@@ -89,9 +128,12 @@ def generate_review_id(parent_asin: str, user_id: str, timestamp: int, review_te
     return hashlib.sha256(s).hexdigest()
 
 
-def transform_review(raw_review: dict) -> dict:
+def transform_review(raw_review: Mapping[str, Any]) -> dict[str, Any]:
     """
     Transform one raw Amazon review into the canonical ingestion schema.
+
+    Missing required Amazon review fields raise KeyError rather than silently
+    producing an incomplete canonical row.
     """
     rating = raw_review["rating"]
     review_title = raw_review["title"]
@@ -115,18 +157,41 @@ def transform_review(raw_review: dict) -> dict:
     }
 
 
-def get_headphone_product_ids(metadata_rows) -> set[str]:
+def is_headphone_title(title: str | None) -> bool:
+    """
+    Check whether a product title contains a strong headphone-related term.
+    """
+    return bool(title and HEADPHONE_TITLE_PATTERN.search(title))
+
+
+def is_standard_asin(p_asin: str | None) -> bool:
+    """
+    Check for a 10-character alphanumeric ASIN beginning with "B".
+    """
+    return bool(p_asin and STANDARD_ASIN_PATTERN.fullmatch(p_asin))
+
+
+def get_headphone_product_ids(metadata_rows: Iterable[Mapping[str, Any]]) -> set[str]:
     """
     Return the unique parent ASINs for valid headphone and earbud products.
+
+    Each raw metadata row must include 'parent_asin', 'categories', and 'title'.
     """
     headphone_ids = set()
     for row in metadata_rows:
-        if row["parent_asin"] and is_headphone_product(row["categories"]):
+        if (
+            row["parent_asin"]
+            and is_headphone_product(row["categories"])
+            and is_headphone_title(row["title"])
+            and is_standard_asin(row["parent_asin"])
+        ):
             headphone_ids.add(row["parent_asin"])
     return headphone_ids
 
 
-def filter_and_transform_rows(review_rows, headphone_ids: set[str]):
+def filter_and_transform_rows(
+    review_rows: Iterable[Mapping[str, Any]], headphone_ids: set[str]
+) -> Iterator[dict[str, Any]]:
     """
     Filter reviews to headphone products and lazily yield transformed rows.
     """

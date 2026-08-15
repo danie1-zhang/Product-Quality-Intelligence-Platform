@@ -7,10 +7,10 @@ name = "product-quality-intelligence-platform"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    "datasets>=5.0.1",
-    "huggingface-hub>=1.27.0",
-    "pandas>=3.0.5",
-    "pyarrow>=25.0.1",
+    "fsspec>=2025.12.0,<2027",
+    "huggingface-hub>=1.27.0,<2",
+    "pyarrow>=25.0.1,<26",
+    "pyspark>=4.2.0,<5",
 ]
 
 [tool.setuptools.packages.find]
@@ -18,8 +18,8 @@ where = ["src"]
 
 [dependency-groups]
 dev = [
-    "pytest>=9.1.1",
-    "ruff>=0.16.2",
+    "pytest>=9.1.1,<10",
+    "ruff>=0.16.2,<1",
 ]
 
 [tool.ruff]

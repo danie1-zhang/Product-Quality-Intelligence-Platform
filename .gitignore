@@ -5,4 +5,6 @@ __pycache__/
 dist/
 build/
 *.egg-info/
-data/raw/*.parquet
+data/raw/
+data/cache/
+data/processed/
