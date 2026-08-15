@@ -25,13 +25,119 @@ FUNCTIONALITY_PATTERNS = (
     "not charging",
     "keeps disconnecting",
     "won't connect",
-    "microphone doesn't work"
+    "microphone doesn't work",
+)
+
+BUILD_QUALITY_PATTERNS = (
+    "headband cracked",
+    "hinge broke",
+    "ear pad fell off",
+    "fell apart",
+    "broke after",
+    "wire broke",
+    "one earbud broke",
 )
 
 
-def functionality_label(text: str) -> ComplaintLabel | None:
+SHIPPING_PATTERNS = (
+    "arrived broken",
+    "box damaged",
+    "damaged box",
+    "box was crushed",
+    "missing packaging",
+    "box was opened",
+)
+
+
+FIT_COMPATIBILITY_PATTERNS = (
+    "doesn't fit",
+    "falls out",
+    "too tight",
+    "too small",
+    "too loose",
+    "incompatible with",
+    "not compatible with",
+)
+
+
+USABILITY_SETUP_PATTERNS = (
+    "no instructions",
+    "instruction unclear",
+    "can't setup",
+    "pairing process is confusing",
+    "instructions confusing",
+    "setup confusing",
+)
+
+
+POSITIVE_PATTERNS = (
+    "works great",
+    "great purchase",
+    "no issues",
+    "works perfectly", 
+    "awesome product", 
+    "seamless setup"
+)
+
+
+def _label_helper(text: str, patterns: tuple[str, ...], label: ComplaintLabel) -> ComplaintLabel | None:
     normalized_text = text.lower()
-    for pattern in FUNCTIONALITY_PATTERNS:
+    for pattern in patterns:
         if pattern in normalized_text:
-            return ComplaintLabel.FUNCTIONALITY
+            return label
     return None
+
+
+def functionality_label(text: str) -> ComplaintLabel | None:
+    return _label_helper(text, FUNCTIONALITY_PATTERNS, ComplaintLabel.FUNCTIONALITY)
+
+
+def build_quality_label(text: str) -> ComplaintLabel | None:
+    return _label_helper(text, BUILD_QUALITY_PATTERNS, ComplaintLabel.BUILD_QUALITY)
+
+
+def shipping_label(text: str) -> ComplaintLabel | None:
+    return _label_helper(text, SHIPPING_PATTERNS, ComplaintLabel.SHIPPING)
+
+
+def fit_compatibility_label(text: str) -> ComplaintLabel | None:
+    return _label_helper(text, FIT_COMPATIBILITY_PATTERNS, ComplaintLabel.FIT_COMPATIBILITY)
+
+
+def usability_setup_label(text: str) -> ComplaintLabel | None:
+    return _label_helper(text, USABILITY_SETUP_PATTERNS, ComplaintLabel.USABILITY_SETUP)
+
+
+def no_complaint_label(text: str, rating: float,) -> ComplaintLabel | None:
+    normalized_text = text.lower()
+    if rating >= 4:
+        for pattern in POSITIVE_PATTERNS:
+            if pattern in normalized_text:
+                return ComplaintLabel.NO_COMPLAINT
+    return None
+
+
+# Label Functions
+LABEL_FUNCTIONS = (
+    functionality_label,
+    build_quality_label,
+    shipping_label,
+    fit_compatibility_label,
+    usability_setup_label
+)
+
+def label_review(text: str, rating: float) -> ComplaintLabel | None:
+    labels = set()
+    for labeling_function in LABEL_FUNCTIONS:
+        label = labeling_function(text)
+        if label:
+            labels.add(label)
+
+    label = no_complaint_label(text, rating)
+    if label:
+        labels.add(label)
+
+    if len(labels) == 1:
+        return next(iter(labels))
+    else:
+        return None
