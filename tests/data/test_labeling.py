@@ -8,6 +8,7 @@ from quality_intelligence.data.labeling import (
     SHIPPING_PATTERNS,
     USABILITY_SETUP_PATTERNS,
     ComplaintLabel,
+    WeakLabelStatus,
     _label_helper,
     build_quality_label,
     fit_compatibility_label,
@@ -28,6 +29,14 @@ def test_complaint_label_exposes_expected_labels():
         "FIT_COMPATIBILITY",
         "USABILITY_SETUP",
         "OTHER",
+    ]
+
+
+def test_weak_label_status_exposes_expected_statuses():
+    assert [status.value for status in WeakLabelStatus] == [
+        "LABELED",
+        "ABSTAIN",
+        "CONFLICT",
     ]
 
 
@@ -173,18 +182,54 @@ def test_no_complaint_matching_is_case_insensitive():
 @pytest.mark.parametrize(
     ("text", "rating", "expected"),
     [
-        ("The product arrived yesterday.", 3, None),
-        ("It stopped working after one day.", 2, ComplaintLabel.FUNCTIONALITY),
-        ("The headband cracked during normal use.", 2, ComplaintLabel.BUILD_QUALITY),
-        ("The box was crushed in transit.", 2, ComplaintLabel.SHIPPING),
-        ("These earbuds are too tight for me.", 2, ComplaintLabel.FIT_COMPATIBILITY),
-        ("There were no instructions in the package.", 2, ComplaintLabel.USABILITY_SETUP),
-        ("This was a great purchase for me.", 4, ComplaintLabel.NO_COMPLAINT),
-        ("This was a great purchase for me.", 3, None),
-        ("It stopped working and the headband cracked.", 2, None),
-        ("It works great, but it stopped working today.", 5, None),
-        ("THE BOX WAS CRUSHED IN TRANSIT.", 1, ComplaintLabel.SHIPPING),
+        ("The product arrived yesterday.", 3, (None, WeakLabelStatus.ABSTAIN)),
+        (
+            "It stopped working after one day.",
+            2,
+            (ComplaintLabel.FUNCTIONALITY, WeakLabelStatus.LABELED),
+        ),
+        (
+            "The headband cracked during normal use.",
+            2,
+            (ComplaintLabel.BUILD_QUALITY, WeakLabelStatus.LABELED),
+        ),
+        (
+            "The box was crushed in transit.",
+            2,
+            (ComplaintLabel.SHIPPING, WeakLabelStatus.LABELED),
+        ),
+        (
+            "These earbuds are too tight for me.",
+            2,
+            (ComplaintLabel.FIT_COMPATIBILITY, WeakLabelStatus.LABELED),
+        ),
+        (
+            "There were no instructions in the package.",
+            2,
+            (ComplaintLabel.USABILITY_SETUP, WeakLabelStatus.LABELED),
+        ),
+        (
+            "This was a great purchase for me.",
+            4,
+            (ComplaintLabel.NO_COMPLAINT, WeakLabelStatus.LABELED),
+        ),
+        ("This was a great purchase for me.", 3, (None, WeakLabelStatus.ABSTAIN)),
+        (
+            "It stopped working and the headband cracked.",
+            2,
+            (None, WeakLabelStatus.CONFLICT),
+        ),
+        (
+            "It works great, but it stopped working today.",
+            5,
+            (None, WeakLabelStatus.CONFLICT),
+        ),
+        (
+            "THE BOX WAS CRUSHED IN TRANSIT.",
+            1,
+            (ComplaintLabel.SHIPPING, WeakLabelStatus.LABELED),
+        ),
     ],
 )
 def test_label_review_conflict_resolution(text, rating, expected):
-    assert label_review(text, rating) is expected
+    assert label_review(text, rating) == expected

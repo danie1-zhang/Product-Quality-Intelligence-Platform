@@ -15,6 +15,12 @@ class ComplaintLabel(StrEnum):
     OTHER = "OTHER"
 
 
+class WeakLabelStatus(StrEnum):
+    LABELED = "LABELED"
+    ABSTAIN = "ABSTAIN"
+    CONFLICT = "CONFLICT"
+
+
 # Weak Labels
 FUNCTIONALITY_PATTERNS = (
     "stopped working",
@@ -126,8 +132,8 @@ LABEL_FUNCTIONS = (
     usability_setup_label
 )
 
-def label_review(text: str, rating: float) -> ComplaintLabel | None:
-    labels = set()
+def label_review(text: str, rating: float) -> tuple[ComplaintLabel | None, WeakLabelStatus]:
+    labels: set[ComplaintLabel] = set()
     for labeling_function in LABEL_FUNCTIONS:
         label = labeling_function(text)
         if label:
@@ -138,6 +144,7 @@ def label_review(text: str, rating: float) -> ComplaintLabel | None:
         labels.add(label)
 
     if len(labels) == 1:
-        return next(iter(labels))
-    else:
-        return None
+        return (next(iter(labels)), WeakLabelStatus.LABELED)
+    if not labels:
+        return (None, WeakLabelStatus.ABSTAIN)
+    return (None, WeakLabelStatus.CONFLICT)
