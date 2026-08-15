@@ -42,7 +42,9 @@ def test_weak_label_status_exposes_expected_statuses():
 
 @pytest.mark.parametrize("pattern", FUNCTIONALITY_PATTERNS)
 def test_each_functionality_pattern_returns_functionality_label(pattern):
-    assert functionality_label(f"The device {pattern} after one day.") is ComplaintLabel.FUNCTIONALITY
+    assert (
+        functionality_label(f"The device {pattern} after one day.") is ComplaintLabel.FUNCTIONALITY
+    )
 
 
 def test_functionality_matching_is_case_insensitive():
@@ -104,12 +106,17 @@ def test_label_helper_uses_substring_matching():
 
 
 def test_functionality_mixed_case_matching():
-    assert functionality_label("The device StOpPeD WoRkInG overnight.") is ComplaintLabel.FUNCTIONALITY
+    assert (
+        functionality_label("The device StOpPeD WoRkInG overnight.") is ComplaintLabel.FUNCTIONALITY
+    )
 
 
 @pytest.mark.parametrize("pattern", BUILD_QUALITY_PATTERNS)
 def test_each_build_quality_pattern_returns_build_quality_label(pattern):
-    assert build_quality_label(f"Unfortunately, the {pattern} during normal use.") is ComplaintLabel.BUILD_QUALITY
+    assert (
+        build_quality_label(f"Unfortunately, the {pattern} during normal use.")
+        is ComplaintLabel.BUILD_QUALITY
+    )
 
 
 def test_build_quality_matching_is_case_insensitive():
@@ -135,7 +142,10 @@ def test_unrelated_text_returns_no_shipping_label():
 
 @pytest.mark.parametrize("pattern", FIT_COMPATIBILITY_PATTERNS)
 def test_each_fit_compatibility_pattern_returns_fit_compatibility_label(pattern):
-    assert fit_compatibility_label(f"I found that it {pattern} my device.") is ComplaintLabel.FIT_COMPATIBILITY
+    assert (
+        fit_compatibility_label(f"I found that it {pattern} my device.")
+        is ComplaintLabel.FIT_COMPATIBILITY
+    )
 
 
 def test_fit_compatibility_matching_is_case_insensitive():
@@ -148,11 +158,17 @@ def test_unrelated_text_returns_no_fit_compatibility_label():
 
 @pytest.mark.parametrize("pattern", USABILITY_SETUP_PATTERNS)
 def test_each_usability_setup_pattern_returns_usability_setup_label(pattern):
-    assert usability_setup_label(f"Setup was frustrating because {pattern}.") is ComplaintLabel.USABILITY_SETUP
+    assert (
+        usability_setup_label(f"Setup was frustrating because {pattern}.")
+        is ComplaintLabel.USABILITY_SETUP
+    )
 
 
 def test_usability_setup_matching_is_case_insensitive():
-    assert usability_setup_label("THERE WERE NO INSTRUCTIONS IN THE PACKAGE.") is ComplaintLabel.USABILITY_SETUP
+    assert (
+        usability_setup_label("THERE WERE NO INSTRUCTIONS IN THE PACKAGE.")
+        is ComplaintLabel.USABILITY_SETUP
+    )
 
 
 def test_unrelated_text_returns_no_usability_setup_label():
@@ -162,7 +178,10 @@ def test_unrelated_text_returns_no_usability_setup_label():
 @pytest.mark.parametrize("pattern", POSITIVE_PATTERNS)
 @pytest.mark.parametrize("rating", [4, 5])
 def test_positive_pattern_with_high_rating_returns_no_complaint(pattern, rating):
-    assert no_complaint_label(f"Overall, this {pattern} for me.", rating) is ComplaintLabel.NO_COMPLAINT
+    assert (
+        no_complaint_label(f"Overall, this {pattern} for me.", rating)
+        is ComplaintLabel.NO_COMPLAINT
+    )
 
 
 @pytest.mark.parametrize("pattern", POSITIVE_PATTERNS)

@@ -5,10 +5,10 @@ import re
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
+
 import pyarrow as pa
 import pyarrow.parquet as pq
 from fsspec import AbstractFileSystem
-
 
 CANONICAL_REVIEW_SCHEMA = pa.schema(
     [
@@ -62,20 +62,24 @@ def write_rows_to_parquet(
     partial_path = output_path.with_name(f"{output_path.name}.part")
     buffer: list[Mapping[str, Any]] = []
 
-    with pq.ParquetWriter(partial_path, CANONICAL_REVIEW_SCHEMA) as writer:
-        for row in rows:
-            buffer.append(row)
+    try:
+        with pq.ParquetWriter(partial_path, CANONICAL_REVIEW_SCHEMA) as writer:
+            for row in rows:
+                buffer.append(row)
 
-            if len(buffer) == batch_size:
+                if len(buffer) == batch_size:
+                    table = rows_to_table(buffer)
+                    writer.write_table(table)
+                    buffer.clear()
+
+            if buffer:
                 table = rows_to_table(buffer)
                 writer.write_table(table)
-                buffer.clear()
 
-        if buffer:
-            table = rows_to_table(buffer)
-            writer.write_table(table)
-
-    os.replace(partial_path, output_path)
+        os.replace(partial_path, output_path)
+    except Exception:
+        partial_path.unlink(missing_ok=True)
+        raise
 
 
 def iter_parquet_rows(

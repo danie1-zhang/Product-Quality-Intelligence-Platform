@@ -82,13 +82,15 @@ POSITIVE_PATTERNS = (
     "works great",
     "great purchase",
     "no issues",
-    "works perfectly", 
-    "awesome product", 
-    "seamless setup"
+    "works perfectly",
+    "awesome product",
+    "seamless setup",
 )
 
 
-def _label_helper(text: str, patterns: tuple[str, ...], label: ComplaintLabel) -> ComplaintLabel | None:
+def _label_helper(
+    text: str, patterns: tuple[str, ...], label: ComplaintLabel
+) -> ComplaintLabel | None:
     normalized_text = text.lower()
     for pattern in patterns:
         if pattern in normalized_text:
@@ -116,7 +118,10 @@ def usability_setup_label(text: str) -> ComplaintLabel | None:
     return _label_helper(text, USABILITY_SETUP_PATTERNS, ComplaintLabel.USABILITY_SETUP)
 
 
-def no_complaint_label(text: str, rating: float,) -> ComplaintLabel | None:
+def no_complaint_label(
+    text: str,
+    rating: float,
+) -> ComplaintLabel | None:
     normalized_text = text.lower()
     if rating >= 4:
         for pattern in POSITIVE_PATTERNS:
@@ -131,8 +136,9 @@ LABEL_FUNCTIONS = (
     build_quality_label,
     shipping_label,
     fit_compatibility_label,
-    usability_setup_label
+    usability_setup_label,
 )
+
 
 def label_review(text: str, rating: float) -> tuple[ComplaintLabel | None, WeakLabelStatus]:
     labels: set[ComplaintLabel] = set()

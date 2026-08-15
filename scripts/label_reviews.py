@@ -1,129 +1,95 @@
-from pyspark.sql import SparkSession
+import argparse
+import logging
+import shutil
+from pathlib import Path
+
+from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
-from pyspark.sql.types import StructField, StructType, StringType
 
-from quality_intelligence.data.labeling import label_review
+from quality_intelligence.data.output import replace_output_directory
+from quality_intelligence.data.weak_labeling_spark import add_weak_labels
 
-
-INPUT_PATH = "data/processed/reviews_clean.parquet"
-OUTPUT_PATH = "data/processed/reviews_labeled.parquet"
-
-LABEL_RESULT_SCHEMA = StructType([
-    StructField("weak_label", StringType(), True),
-    StructField("weak_label_status", StringType(), False),
-])
-
-
-def label_review_for_spark(text: str, rating: float) -> tuple[str | None, str]:
-    label, status = label_review(text, rating)
-    if label:
-        str_label = label.value
-    else:
-        str_label = None
-    str_status = status.value
-    return (str_label, str_status)
-
-
-label_review_udf = F.udf(label_review_for_spark, LABEL_RESULT_SCHEMA)
-
-def add_weak_labels(df):
-    df = df.withColumn("label_result", label_review_udf(F.col("cleaned_review_text"), F.col("rating")))
-    df = df.withColumn("weak_label", F.col("label_result.weak_label"))
-    df = df.withColumn("weak_label_status", F.col("label_result.weak_label_status"))
-    return df.drop("label_result")
-
-
-LABELS_TO_INSPECT = [
+DEFAULT_INPUT_PATH = Path("data/processed/reviews_clean.parquet")
+DEFAULT_OUTPUT_PATH = Path("data/processed/reviews_labeled.parquet")
+LABELS_TO_INSPECT = (
     "FUNCTIONALITY",
     "NO_COMPLAINT",
     "FIT_COMPATIBILITY",
     "BUILD_QUALITY",
     "USABILITY_SETUP",
     "SHIPPING",
-]
+)
+LOGGER = logging.getLogger(__name__)
 
 
-def main():
-    spark = (
-        SparkSession.builder
-        .appName("product-quality-weak-labeling")
-        .master("local[*]")
-        .config("spark.driver.memory", "4g")
-        .getOrCreate()
-    )
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Apply weak labels to processed reviews.")
+    parser.add_argument("--input", type=Path, default=DEFAULT_INPUT_PATH)
+    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_PATH)
+    parser.add_argument("--sample-size", type=int, default=10)
+    parser.add_argument("--master", default="local[*]")
+    parser.add_argument("--driver-memory", default="4g")
+    return parser.parse_args()
 
-    spark.sparkContext.setLogLevel("WARN")
 
-    print(f"Reading processed reviews from: {INPUT_PATH}")
-    df = spark.read.parquet(INPUT_PATH)
-
-    print("Applying weak-labeling rules...")
-
-    # Cache because we will reuse this labeled DataFrame for
-    # several actions below.
-    labeled_df = add_weak_labels(df).cache()
-
-    # First action: computes the labels and populates the cache.
-    total_count = labeled_df.count()
-
-    print(f"\nTotal reviews: {total_count:,}")
-
-    print("\nWeak-label status distribution:")
-    (
-        labeled_df
-        .groupBy("weak_label_status")
-        .count()
-        .orderBy(F.desc("count"))
-        .show(truncate=False)
-    )
-
-    print("\nLabel distribution among labeled reviews:")
-    (
-        labeled_df
-        .filter(F.col("weak_label_status") == "LABELED")
-        .groupBy("weak_label")
-        .count()
-        .orderBy(F.desc("count"))
-        .show(truncate=False)
-    )
-
-    print("\nRandom examples by weak label:")
+def show_labeling_summary(labeled_df: DataFrame, sample_size: int) -> None:
+    LOGGER.info("Total reviews: %s", f"{labeled_df.count():,}")
+    labeled_df.groupBy("weak_label_status").count().orderBy(F.desc("count")).show(truncate=False)
+    labeled_df.filter(F.col("weak_label_status") == "LABELED").groupBy(
+        "weak_label"
+    ).count().orderBy(F.desc("count")).show(truncate=False)
 
     for label in LABELS_TO_INSPECT:
-        print(f"\n--- {label} ---")
-
-        (
-            labeled_df
-            .filter(F.col("weak_label") == label)
-            .orderBy(F.rand(seed=42))
-            .select(
-                "cleaned_review_text",
-                "rating",
-                "weak_label",
-            )
-            .limit(10)
-            .show(
-                10,
-                truncate=False,
-            )
-        )
-
-    print(f"\nWriting labeled reviews to: {OUTPUT_PATH}")
-    labeled_df.write.mode("overwrite").parquet(OUTPUT_PATH)
-    print("Write complete.")
+        LOGGER.info("Sample label: %s", label)
+        labeled_df.filter(F.col("weak_label") == label).orderBy(F.rand(seed=42)).select(
+            "cleaned_review_text", "rating", "weak_label"
+        ).limit(sample_size).show(sample_size, truncate=False)
 
 
+def write_labeled_reviews(labeled_df: DataFrame, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    staged_path = output_path.with_name(f"{output_path.name}.part")
+    if staged_path.exists():
+        shutil.rmtree(staged_path)
+    try:
+        labeled_df.write.parquet(str(staged_path))
+        replace_output_directory(staged_path, output_path)
+    except Exception:
+        if staged_path.exists():
+            shutil.rmtree(staged_path)
+        raise
 
-    written_df = spark.read.parquet(OUTPUT_PATH)
 
-    print(f"Written rows: {written_df.count():,}")
-    written_df.printSchema()
+def run_labeling(
+    spark: SparkSession, input_path: Path, output_path: Path, sample_size: int
+) -> None:
+    LOGGER.info("Reading processed reviews from: %s", input_path)
+    labeled_df = add_weak_labels(spark.read.parquet(str(input_path))).cache()
+    try:
+        show_labeling_summary(labeled_df, sample_size)
+        write_labeled_reviews(labeled_df, output_path)
+        written_df = spark.read.parquet(str(output_path))
+        LOGGER.info("Written rows: %s", f"{written_df.count():,}")
+        written_df.printSchema()
+    finally:
+        labeled_df.unpersist()
 
-    written_df.groupBy("weak_label_status").count().show()
 
-    labeled_df.unpersist()
-
-    spark.stop()
+def main() -> None:
+    args = parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    spark = (
+        SparkSession.builder.appName("product-quality-weak-labeling")
+        .master(args.master)
+        .config("spark.driver.memory", args.driver_memory)
+        .config("spark.sql.session.timeZone", "UTC")
+        .getOrCreate()
+    )
+    spark.sparkContext.setLogLevel("WARN")
+    try:
+        run_labeling(spark, args.input, args.output, args.sample_size)
+    finally:
+        spark.stop()
 
 
 if __name__ == "__main__":

@@ -40,13 +40,17 @@ def cache_remote_shard(
         return local_path
 
     LOGGER.info("Downloading %s shard %s/%s", shard_type, index, total)
-    with fs.open(remote_path, "rb") as source, partial_path.open("wb") as destination:
-        shutil.copyfileobj(source, destination, length=1024 * 1024)
+    try:
+        with fs.open(remote_path, "rb") as source, partial_path.open("wb") as destination:
+            shutil.copyfileobj(source, destination, length=1024 * 1024)
 
-    if not is_readable_parquet(partial_path):
-        raise OSError(f"Downloaded shard is not a readable Parquet file: {remote_path}")
+        if not is_readable_parquet(partial_path):
+            raise OSError(f"Downloaded shard is not a readable Parquet file: {remote_path}")
 
-    os.replace(partial_path, local_path)
+        os.replace(partial_path, local_path)
+    except Exception:
+        partial_path.unlink(missing_ok=True)
+        raise
     return local_path
 
 
