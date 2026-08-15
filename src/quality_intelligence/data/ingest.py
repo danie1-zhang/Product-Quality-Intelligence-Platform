@@ -5,10 +5,10 @@ import re
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
-
 import pyarrow as pa
 import pyarrow.parquet as pq
 from fsspec import AbstractFileSystem
+
 
 CANONICAL_REVIEW_SCHEMA = pa.schema(
     [
@@ -35,10 +35,12 @@ HEADPHONE_TITLE_TERMS = [
     "over-ear",
     "on-ear",
 ]
+
 HEADPHONE_TITLE_PATTERN = re.compile(
     rf"(?<![A-Za-z0-9])(?:{'|'.join(map(re.escape, HEADPHONE_TITLE_TERMS))})(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
+
 STANDARD_ASIN_PATTERN = re.compile(r"^B[A-Z0-9]{9}$", re.IGNORECASE)
 
 
