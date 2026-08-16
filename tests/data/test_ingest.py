@@ -431,6 +431,7 @@ def test_write_rows_to_parquet_preserves_existing_output_on_failure(raw_review, 
         write_rows_to_parquet(failing_rows(), output_path)
 
     assert pq.read_table(output_path).to_pylist() == [existing_review]
+    assert not output_path.with_name("reviews.parquet.part").exists()
 
 
 # iter_parquet_rows tests

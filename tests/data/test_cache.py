@@ -87,4 +87,4 @@ def test_invalid_download_is_not_promoted_to_final_file(tmp_path):
         cache_remote_shard(fs, "remote/shard.parquet", tmp_path, "review", 1, 1)
 
     assert not (tmp_path / "shard.parquet").exists()
-    assert (tmp_path / "shard.parquet.part").exists()
+    assert not (tmp_path / "shard.parquet.part").exists()

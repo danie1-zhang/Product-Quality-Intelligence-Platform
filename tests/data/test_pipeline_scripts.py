@@ -40,3 +40,18 @@ def test_replace_output_directory_restores_old_output_when_swap_fails(tmp_path, 
 
     assert (output_path / "old").read_text() == "old"
     assert staged_path.exists()
+
+
+def test_replace_output_directory_recovers_orphaned_backup(tmp_path):
+    output_path = tmp_path / "reviews.parquet"
+    backup_path = tmp_path / "reviews.parquet.backup"
+    staged_path = tmp_path / "reviews.parquet.part"
+    backup_path.mkdir()
+    staged_path.mkdir()
+    (backup_path / "old").write_text("old")
+    (staged_path / "new").write_text("new")
+
+    replace_output_directory(staged_path, output_path)
+
+    assert (output_path / "new").read_text() == "new"
+    assert not backup_path.exists()

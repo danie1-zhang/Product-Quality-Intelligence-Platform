@@ -9,6 +9,7 @@ requires-python = ">=3.11"
 dependencies = [
     "fsspec>=2025.12.0,<2027",
     "huggingface-hub>=1.27.0,<2",
+    "pandas>=2.2,<3.0",
     "pyarrow>=25.0.1,<26",
     "pyspark>=4.2.0,<5",
 ]
@@ -18,10 +19,33 @@ where = ["src"]
 
 [dependency-groups]
 dev = [
+    "mypy>=1.17.0,<2",
     "pytest>=9.1.1,<10",
+    "pytest-cov>=6.2.0,<7",
     "ruff>=0.16.2,<1",
 ]
 
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+markers = [
+    "integration: tests that require a local Spark gateway",
+]
+
+[tool.coverage.run]
+source = ["quality_intelligence"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+
+[tool.mypy]
+python_version = "3.11"
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+ignore_missing_imports = true

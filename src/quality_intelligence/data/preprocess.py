@@ -6,7 +6,11 @@ def deduplicate_reviews(df: DataFrame) -> DataFrame:
     """
     Keep one row per 'review_id', preferring the greatest 'helpful_votes' value.
     """
-    w = Window.partitionBy("review_id").orderBy(F.col("helpful_votes").desc())
+    tie_breaker_columns = [F.col(column) for column in sorted(df.columns)]
+    tie_breaker = F.sha2(F.to_json(F.struct(*tie_breaker_columns)), 256)
+    w = Window.partitionBy("review_id").orderBy(
+        F.col("helpful_votes").desc_nulls_last(), tie_breaker.asc()
+    )
     df = df.withColumn("rn", F.row_number().over(w))
     df = df.filter(F.col("rn") == 1)
     df = df.drop("rn")
@@ -22,8 +26,12 @@ def clean_review_text(df: DataFrame) -> DataFrame:
     and trailing whitespace is removed. Rows whose cleaned text is null or empty
     are excluded from the returned DataFrame.
     """
-    df = df.withColumn("cleaned_review_text", F.regexp_replace(F.col("review_text"), r"(?i)<br\s*/?>", " "))
-    df = df.withColumn("cleaned_review_text", F.regexp_replace(F.col("cleaned_review_text"), r"\s+", " "))
+    df = df.withColumn(
+        "cleaned_review_text", F.regexp_replace(F.col("review_text"), r"(?i)<br\s*/?>", " ")
+    )
+    df = df.withColumn(
+        "cleaned_review_text", F.regexp_replace(F.col("cleaned_review_text"), r"\s+", " ")
+    )
     df = df.withColumn("cleaned_review_text", F.trim(F.col("cleaned_review_text")))
     df = df.filter(F.col("cleaned_review_text").isNotNull() & (F.col("cleaned_review_text") != ""))
     return df
@@ -63,7 +71,11 @@ def add_product_historical_features(df: DataFrame) -> DataFrame:
     while 'product_prior_average_rating' contains their average 'rating'. Only
     reviews with an earlier 'timestamp' contribute. All existing columns are preserved.
     """
-    w = Window.partitionBy("product_id").orderBy("timestamp").rangeBetween(Window.unboundedPreceding, -1)
+    w = (
+        Window.partitionBy("product_id")
+        .orderBy("timestamp")
+        .rangeBetween(Window.unboundedPreceding, -1)
+    )
     df = df.withColumn("product_prior_review_count", F.count("*").over(w))
     df = df.withColumn("product_prior_average_rating", F.avg(F.col("rating")).over(w))
     return df

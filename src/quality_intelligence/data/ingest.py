@@ -35,10 +35,12 @@ HEADPHONE_TITLE_TERMS = [
     "over-ear",
     "on-ear",
 ]
+
 HEADPHONE_TITLE_PATTERN = re.compile(
     rf"(?<![A-Za-z0-9])(?:{'|'.join(map(re.escape, HEADPHONE_TITLE_TERMS))})(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
+
 STANDARD_ASIN_PATTERN = re.compile(r"^B[A-Z0-9]{9}$", re.IGNORECASE)
 
 
@@ -60,20 +62,24 @@ def write_rows_to_parquet(
     partial_path = output_path.with_name(f"{output_path.name}.part")
     buffer: list[Mapping[str, Any]] = []
 
-    with pq.ParquetWriter(partial_path, CANONICAL_REVIEW_SCHEMA) as writer:
-        for row in rows:
-            buffer.append(row)
+    try:
+        with pq.ParquetWriter(partial_path, CANONICAL_REVIEW_SCHEMA) as writer:
+            for row in rows:
+                buffer.append(row)
 
-            if len(buffer) == batch_size:
+                if len(buffer) == batch_size:
+                    table = rows_to_table(buffer)
+                    writer.write_table(table)
+                    buffer.clear()
+
+            if buffer:
                 table = rows_to_table(buffer)
                 writer.write_table(table)
-                buffer.clear()
 
-        if buffer:
-            table = rows_to_table(buffer)
-            writer.write_table(table)
-
-    os.replace(partial_path, output_path)
+        os.replace(partial_path, output_path)
+    except Exception:
+        partial_path.unlink(missing_ok=True)
+        raise
 
 
 def iter_parquet_rows(

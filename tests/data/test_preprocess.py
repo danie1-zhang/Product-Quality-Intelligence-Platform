@@ -81,6 +81,15 @@ def test_duplicate_id_keeps_highest_helpful_votes(spark):
     assert tuple(result[0]) == ("r1", 8, "more helpful")
 
 
+def test_duplicate_id_tie_is_resolved_deterministically(spark):
+    rows = [("r1", 8, "zulu"), ("r1", 8, "alpha")]
+
+    forward = tuple(deduplicate_reviews(make_reviews(spark, rows)).first())
+    reverse = tuple(deduplicate_reviews(make_reviews(spark, reversed(rows))).first())
+
+    assert forward == reverse
+
+
 def test_exact_duplicate_rows_leave_one_row(spark):
     reviews = make_reviews(spark, [("r1", 3, "same"), ("r1", 3, "same")])
 
@@ -202,9 +211,11 @@ def test_clean_review_text_adds_cleaned_column_to_schema(spark):
 def test_normalize_timestamps_converts_milliseconds_to_datetime(spark):
     reviews = make_timestamped_reviews(spark, [("r1", 1704067200000, "good")])
 
-    result = normalize_timestamps(reviews).select(
-        F.date_format("review_datetime", "yyyy-MM-dd HH:mm:ss").alias("review_datetime")
-    ).first()
+    result = (
+        normalize_timestamps(reviews)
+        .select(F.date_format("review_datetime", "yyyy-MM-dd HH:mm:ss").alias("review_datetime"))
+        .first()
+    )
 
     assert result.review_datetime == "2024-01-01 00:00:00"
 
@@ -212,10 +223,14 @@ def test_normalize_timestamps_converts_milliseconds_to_datetime(spark):
 def test_normalize_timestamps_derives_review_date(spark):
     reviews = make_timestamped_reviews(spark, [("r1", 1704153599000, "good")])
 
-    result = normalize_timestamps(reviews).select(
-        F.date_format("review_datetime", "yyyy-MM-dd HH:mm:ss").alias("review_datetime"),
-        "review_date",
-    ).first()
+    result = (
+        normalize_timestamps(reviews)
+        .select(
+            F.date_format("review_datetime", "yyyy-MM-dd HH:mm:ss").alias("review_datetime"),
+            "review_date",
+        )
+        .first()
+    )
 
     assert result.review_datetime == "2024-01-01 23:59:59"
     assert result.review_date == date(2024, 1, 1)
