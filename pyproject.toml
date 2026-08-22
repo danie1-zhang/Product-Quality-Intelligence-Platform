@@ -9,9 +9,11 @@ requires-python = ">=3.11"
 dependencies = [
     "fsspec>=2025.12.0,<2027",
     "huggingface-hub>=1.27.0,<2",
+    "mlflow>=3.15.1",
     "pandas>=2.2,<3.0",
     "pyarrow>=25.0.1,<26",
     "pyspark>=4.2.0,<5",
+    "scikit-learn>=1.9.0",
 ]
 
 [tool.setuptools.packages.find]

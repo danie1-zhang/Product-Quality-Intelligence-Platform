@@ -12,3 +12,8 @@ build/
 data/raw/
 data/cache/
 data/processed/
+
+# Machine-local MLflow tracking data and model artifacts
+mlflow.db
+mlruns/
+mlartifacts/
