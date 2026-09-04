@@ -14,6 +14,8 @@ dependencies = [
     "pyarrow>=25.0.1,<26",
     "pyspark>=4.2.0,<5",
     "scikit-learn>=1.9.0",
+    "torch>=2.13.0",
+    "transformers>=5.15.1",
 ]
 
 [tool.setuptools.packages.find]
