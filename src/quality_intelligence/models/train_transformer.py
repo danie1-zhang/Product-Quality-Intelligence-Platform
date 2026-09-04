@@ -4,6 +4,7 @@ from collections.abc import Sized
 from typing import cast
 
 import mlflow
+import mlflow.transformers as mlflow_transformers
 import numpy as np
 import pandas as pd
 import torch
@@ -254,6 +255,12 @@ def train_model(
             best_model_state = copy.deepcopy(model.state_dict())
 
         history.append(epoch_metrics)
+        print(
+            f"Epoch {epoch + 1}/{epochs} - "
+            f"train_loss: {train_loss:.4f} - "
+            f"validation_accuracy: {validation_metrics['accuracy']:.4f} - "
+            f"validation_macro_f1: {validation_metrics['macro_f1']:.4f}"
+        )
 
     model.load_state_dict(best_model_state)
 
@@ -310,6 +317,13 @@ def log_training_metrics(training_results):
     )
 
 
+def log_best_model(model, tokenizer):
+    return mlflow_transformers.log_model(
+        transformers_model={"model": model, "tokenizer": tokenizer},
+        name="model",
+    )
+
+
 def run_transformer_experiment(
     *,
     learning_rate,
@@ -357,7 +371,9 @@ def run_transformer_experiment(
             scheduler=scheduler,
         )
         log_training_metrics(training_results)
+        model_info = log_best_model(model, tokenizer)
         training_results["mlflow_run_id"] = run.info.run_id
+        training_results["mlflow_model_uri"] = model_info.model_uri
 
     return model, training_results
 
