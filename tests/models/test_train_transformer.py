@@ -1,9 +1,12 @@
+import random
 from types import SimpleNamespace
 
+import numpy as np
+import pandas as pd
 import torch
+from torch.utils.data import RandomSampler, SequentialSampler
 
-from quality_intelligence.models import train_transformer
-
+from quality_intelligence.models import baseline, train_transformer
 
 EXPECTED_LABEL_TO_ID = {
     "NO_COMPLAINT": 0,
@@ -132,8 +135,356 @@ def test_evaluate_returns_bounded_metrics():
         }
     ]
 
-    metrics = train_transformer.evaluate(PredictingModel(), dataloader)
+    metrics = train_transformer.evaluate(
+        PredictingModel(), dataloader, torch.device("cpu")
+    )
 
     assert {"accuracy", "macro_f1"} <= metrics.keys()
     assert 0 <= metrics["accuracy"] <= 1
     assert 0 <= metrics["macro_f1"] <= 1
+
+
+def test_training_data_split_matches_baseline_contract(tmp_path):
+    path = tmp_path / "weak-labels.parquet"
+    rows = [
+        {
+            "cleaned_review_text": f"{label} review {index}",
+            "weak_label": label,
+        }
+        for label in train_transformer.SUPPORTED_LABELS
+        for index in range(10)
+    ]
+    pd.DataFrame(rows).to_parquet(path, index=False)
+
+    texts, labels = train_transformer.load_training_data(path)
+    first = train_transformer.split_data(texts, labels)
+    second = train_transformer.split_data(texts, labels)
+    train_texts, validation_texts, train_labels, validation_labels = first
+
+    assert train_transformer.TRAINING_DATA_PATH == baseline.TRAINING_DATA_PATH
+    assert train_transformer.VALIDATION_FRACTION == baseline.VALIDATION_FRACTION
+    assert train_transformer.RANDOM_STATE == baseline.RANDOM_STATE
+    assert set(train_texts).isdisjoint(validation_texts)
+    assert len(train_texts) + len(validation_texts) == len(texts)
+    assert set(train_labels) | set(validation_labels) <= set(
+        train_transformer.SUPPORTED_LABELS
+    )
+    for first_part, second_part in zip(first, second, strict=True):
+        pd.testing.assert_series_equal(first_part, second_part)
+
+
+def test_training_dataloaders_use_expected_samplers(tmp_path):
+    path = tmp_path / "weak-labels.parquet"
+    rows = [
+        {
+            "cleaned_review_text": f"{label} review {index}",
+            "weak_label": label,
+        }
+        for label in train_transformer.SUPPORTED_LABELS
+        for index in range(5)
+    ]
+    pd.DataFrame(rows).to_parquet(path, index=False)
+
+    train_loader, validation_loader = train_transformer.build_training_dataloaders(
+        TinyTokenizer(), batch_size=4, path=path
+    )
+
+    assert isinstance(train_loader.sampler, RandomSampler)
+    assert isinstance(validation_loader.sampler, SequentialSampler)
+    assert len(train_loader.dataset) + len(validation_loader.dataset) == len(rows)
+    assert set(train_loader.dataset.labels) | set(
+        validation_loader.dataset.labels
+    ) <= set(train_transformer.SUPPORTED_LABELS)
+
+
+def test_stratified_subset_is_deterministic_and_preserves_proportions():
+    class_counts = {
+        "NO_COMPLAINT": 50,
+        "FUNCTIONALITY": 30,
+        "BUILD_QUALITY": 20,
+        "SHIPPING": 15,
+        "FIT_COMPATIBILITY": 10,
+        "USABILITY_SETUP": 5,
+    }
+    labels = pd.Series(
+        [label for label, count in class_counts.items() for _ in range(count)]
+    )
+    texts = pd.Series([f"review {index}" for index in range(len(labels))])
+
+    first_texts, first_labels = train_transformer.stratified_subset(
+        texts, labels, subset_size=60
+    )
+    second_texts, second_labels = train_transformer.stratified_subset(
+        texts, labels, subset_size=60
+    )
+
+    assert len(first_texts) == len(first_labels) == 60
+    pd.testing.assert_series_equal(first_texts, second_texts)
+    pd.testing.assert_series_equal(first_labels, second_labels)
+    assert set(first_labels) == set(train_transformer.SUPPORTED_LABELS)
+
+    parent_proportions = labels.value_counts(normalize=True)
+    subset_proportions = first_labels.value_counts(normalize=True)
+    assert (parent_proportions - subset_proportions).abs().max() < 0.02
+
+
+def test_smoke_dataloaders_subset_only_canonical_splits(tmp_path):
+    path = tmp_path / "weak-labels.parquet"
+    rows = [
+        {
+            "cleaned_review_text": f"{label} review {index}",
+            "weak_label": label,
+        }
+        for label in train_transformer.SUPPORTED_LABELS
+        for index in range(20)
+    ]
+    pd.DataFrame(rows).to_parquet(path, index=False)
+    texts, labels = train_transformer.load_training_data(path)
+    canonical_before = train_transformer.split_data(texts, labels)
+
+    train_loader, validation_loader = (
+        train_transformer.build_smoke_training_dataloaders(
+            TinyTokenizer(),
+            batch_size=4,
+            path=path,
+            train_subset_size=48,
+            validation_subset_size=12,
+        )
+    )
+    canonical_after = train_transformer.split_data(texts, labels)
+
+    assert len(train_loader.dataset) == 48
+    assert len(validation_loader.dataset) == 12
+    assert set(train_loader.dataset.texts) <= set(canonical_before[0])
+    assert set(validation_loader.dataset.texts) <= set(canonical_before[1])
+    assert set(train_loader.dataset.labels) == set(
+        train_transformer.SUPPORTED_LABELS
+    )
+    assert set(validation_loader.dataset.labels) == set(
+        train_transformer.SUPPORTED_LABELS
+    )
+    for before, after in zip(canonical_before, canonical_after, strict=True):
+        pd.testing.assert_series_equal(before, after)
+
+
+def test_scheduler_uses_calculated_training_and_warmup_steps(monkeypatch):
+    captured = {}
+    expected_scheduler = object()
+
+    def fake_linear_scheduler(
+        optimizer, *, num_warmup_steps, num_training_steps
+    ):
+        captured.update(
+            optimizer=optimizer,
+            num_warmup_steps=num_warmup_steps,
+            num_training_steps=num_training_steps,
+        )
+        return expected_scheduler
+
+    monkeypatch.setattr(
+        train_transformer,
+        "get_linear_schedule_with_warmup",
+        fake_linear_scheduler,
+    )
+    optimizer = object()
+    train_dataloader = [object()] * 8
+
+    total_steps = train_transformer.calculate_training_steps(
+        train_dataloader, epochs=5
+    )
+    scheduler = train_transformer.build_scheduler(
+        optimizer, num_training_steps=total_steps, warmup_ratio=0.1
+    )
+
+    assert total_steps == 40
+    assert captured == {
+        "optimizer": optimizer,
+        "num_warmup_steps": 4,
+        "num_training_steps": 40,
+    }
+    assert scheduler is expected_scheduler
+
+
+def test_train_one_epoch_steps_scheduler_after_each_optimizer_update():
+    events = []
+
+    class TinyModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.tensor(1.0))
+
+        def forward(self, **batch):
+            return SimpleNamespace(loss=self.weight * batch["labels"].float().mean())
+
+    class RecordingOptimizer:
+        def zero_grad(self):
+            events.append("zero_grad")
+
+        def step(self):
+            events.append("optimizer")
+
+    class RecordingScheduler:
+        def step(self):
+            events.append("scheduler")
+
+    dataloader = [{"labels": torch.tensor([1])}, {"labels": torch.tensor([2])}]
+
+    train_transformer.train_one_epoch(
+        TinyModel(),
+        dataloader,
+        RecordingOptimizer(),
+        torch.device("cpu"),
+        scheduler=RecordingScheduler(),
+    )
+
+    assert events == [
+        "zero_grad",
+        "optimizer",
+        "scheduler",
+        "zero_grad",
+        "optimizer",
+        "scheduler",
+    ]
+
+
+def test_train_one_epoch_works_without_scheduler():
+    model = torch.nn.Linear(1, 1)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    dataloader = [{"input": torch.tensor([[1.0]])}]
+
+    class LossModel(torch.nn.Module):
+        def __init__(self, layer):
+            super().__init__()
+            self.layer = layer
+
+        def forward(self, **batch):
+            return SimpleNamespace(loss=self.layer(batch["input"]).sum())
+
+    loss = train_transformer.train_one_epoch(
+        LossModel(model), dataloader, optimizer, torch.device("cpu")
+    )
+
+    assert isinstance(loss, float)
+
+
+def test_set_seed_reproducibly_seeds_supported_rngs():
+    train_transformer.set_seed(train_transformer.RANDOM_STATE)
+    first = (random.random(), np.random.random(), torch.rand(1))
+
+    train_transformer.set_seed(train_transformer.RANDOM_STATE)
+    second = (random.random(), np.random.random(), torch.rand(1))
+
+    assert first[0] == second[0]
+    assert first[1] == second[1]
+    assert torch.equal(first[2], second[2])
+
+
+def test_seeded_training_dataloaders_shuffle_reproducibly():
+    class IndexDataset(torch.utils.data.Dataset):
+        def __len__(self):
+            return 12
+
+        def __getitem__(self, index):
+            return {
+                "input_ids": [index + 1],
+                "attention_mask": [1],
+                "labels": index,
+            }
+
+    tokenizer = TinyTokenizer()
+    first_loader = train_transformer.build_dataloader(
+        IndexDataset(), tokenizer, batch_size=3, shuffle=True
+    )
+    second_loader = train_transformer.build_dataloader(
+        IndexDataset(), tokenizer, batch_size=3, shuffle=True
+    )
+
+    first_order = torch.cat([batch["labels"] for batch in first_loader]).tolist()
+    second_order = torch.cat([batch["labels"] for batch in second_loader]).tolist()
+
+    assert first_order == second_order
+    assert first_order != list(range(12))
+
+
+def test_log_experiment_parameters_logs_expected_configuration(monkeypatch):
+    logged = []
+    monkeypatch.setattr(train_transformer.mlflow, "log_params", logged.append)
+
+    train_transformer.log_experiment_parameters(
+        learning_rate=5e-5,
+        batch_size=16,
+        weight_decay=0.01,
+        epochs=3,
+        warmup_ratio=0.1,
+        train_size=5_000,
+        validation_size=1_000,
+        device=torch.device("cpu"),
+    )
+
+    assert logged == [
+        {
+            "model_name": train_transformer.MODEL_NAME,
+            "learning_rate": 5e-5,
+            "batch_size": 16,
+            "weight_decay": 0.01,
+            "epochs": 3,
+            "max_length": train_transformer.MAX_LENGTH,
+            "warmup_ratio": 0.1,
+            "random_seed": train_transformer.RANDOM_STATE,
+            "train_size": 5_000,
+            "validation_size": 1_000,
+            "device": "cpu",
+        }
+    ]
+
+
+def test_log_training_metrics_uses_epoch_steps_and_logs_best_summary(monkeypatch):
+    logged = []
+
+    def record_metrics(metrics, step=None):
+        logged.append((metrics, step))
+
+    monkeypatch.setattr(train_transformer.mlflow, "log_metrics", record_metrics)
+    results = {
+        "history": [
+            {
+                "epoch": 1,
+                "train_loss": 0.5,
+                "validation_accuracy": 0.8,
+                "validation_macro_f1": 0.7,
+            },
+            {
+                "epoch": 2,
+                "train_loss": 0.3,
+                "validation_accuracy": 0.85,
+                "validation_macro_f1": 0.75,
+            },
+        ],
+        "best_epoch": 2,
+        "best_macro_f1": 0.75,
+    }
+
+    train_transformer.log_training_metrics(results)
+
+    assert logged[:2] == [
+        (
+            {
+                "train_loss": 0.5,
+                "validation_accuracy": 0.8,
+                "validation_macro_f1": 0.7,
+            },
+            1,
+        ),
+        (
+            {
+                "train_loss": 0.3,
+                "validation_accuracy": 0.85,
+                "validation_macro_f1": 0.75,
+            },
+            2,
+        ),
+    ]
+    assert logged[2] == (
+        {"best_epoch": 2, "best_validation_macro_f1": 0.75},
+        None,
+    )
