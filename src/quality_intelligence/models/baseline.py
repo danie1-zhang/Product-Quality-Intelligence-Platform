@@ -1,5 +1,5 @@
 import mlflow
-import mlflow.sklearn
+import mlflow.sklearn as mlflow_sklearn
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
@@ -137,7 +137,7 @@ def run_baseline_experiment(
                 "weak_val_macro_f1": results["macro_f1"],
             }
         )
-        model_info = mlflow.sklearn.log_model(pipeline, name="model")
+        model_info = mlflow_sklearn.log_model(pipeline, name="model")
         results["mlflow_run_id"] = run.info.run_id
         results["mlflow_model_uri"] = model_info.model_uri
 
