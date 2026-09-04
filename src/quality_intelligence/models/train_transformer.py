@@ -1,12 +1,15 @@
 import copy
+import gc
 import random
 from collections.abc import Sized
 from importlib.metadata import version
+from pathlib import Path
 from typing import cast
 
 import mlflow
 import mlflow.transformers as mlflow_transformers
 import numpy as np
+import optuna
 import pandas as pd
 import torch
 from sklearn.metrics import accuracy_score, f1_score
@@ -28,6 +31,10 @@ RANDOM_STATE = 42
 SMOKE_TRAIN_SIZE = 5_000
 SMOKE_VALIDATION_SIZE = 1_000
 MLFLOW_EXPERIMENT_NAME = "product-quality-complaint-classification"
+TUNING_TRAIN_SIZE = 20_000
+TUNING_VALIDATION_SIZE = 5_000
+OPTUNA_STUDY_NAME = "distilbert-hyperparameter-tuning"
+OPTUNA_STORAGE = "sqlite:///artifacts/optuna/distilbert_optuna.db"
 
 
 def set_seed(seed):
@@ -116,6 +123,37 @@ def build_smoke_training_dataloaders(
         validation_dataset, tokenizer, batch_size=batch_size, shuffle=False
     )
     return train_dataloader, validation_dataloader
+
+
+def build_tuning_dataloaders(
+    tokenizer,
+    batch_size,
+    path=TRAINING_DATA_PATH,
+    train_subset_size=TUNING_TRAIN_SIZE,
+    validation_subset_size=TUNING_VALIDATION_SIZE,
+):
+    texts, labels = load_training_data(path)
+    train_texts, validation_texts, train_labels, validation_labels = split_data(
+        texts, labels
+    )
+    train_texts, train_labels = stratified_subset(
+        train_texts, train_labels, train_subset_size
+    )
+    validation_texts, validation_labels = stratified_subset(
+        validation_texts, validation_labels, validation_subset_size
+    )
+    train_dataset = ReviewDataset(train_texts, train_labels, tokenizer, MAX_LENGTH)
+    validation_dataset = ReviewDataset(
+        validation_texts, validation_labels, tokenizer, MAX_LENGTH
+    )
+    return (
+        build_dataloader(
+            train_dataset, tokenizer, batch_size=batch_size, shuffle=True
+        ),
+        build_dataloader(
+            validation_dataset, tokenizer, batch_size=batch_size, shuffle=False
+        ),
+    )
 
 
 def build_tokenizer():
@@ -227,6 +265,7 @@ def train_model(
     epochs,
     device,
     scheduler=None,
+    epoch_callback=None,
 ):
 
     history = []
@@ -262,6 +301,8 @@ def train_model(
             f"validation_accuracy: {validation_metrics['accuracy']:.4f} - "
             f"validation_macro_f1: {validation_metrics['macro_f1']:.4f}"
         )
+        if epoch_callback is not None:
+            epoch_callback(epoch_metrics)
 
     model.load_state_dict(best_model_state)
 
@@ -329,6 +370,152 @@ def log_best_model(model, tokenizer):
             f"transformers=={version('transformers')}",
         ],
     )
+
+
+def cleanup_trial_resources():
+    gc.collect()
+    if torch.backends.mps.is_available():
+        torch.mps.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def optuna_objective(
+    trial,
+    *,
+    train_subset_size=TUNING_TRAIN_SIZE,
+    validation_subset_size=TUNING_VALIDATION_SIZE,
+    epochs=2,
+    path=TRAINING_DATA_PATH,
+):
+    learning_rate = trial.suggest_float("learning_rate", 1e-5, 5e-5, log=True)
+    weight_decay = trial.suggest_float("weight_decay", 0.0, 0.1)
+    warmup_ratio = trial.suggest_float("warmup_ratio", 0.0, 0.15)
+    batch_size = trial.suggest_categorical("batch_size", [8, 16])
+    set_seed(RANDOM_STATE)
+    device = get_device()
+    model = tokenizer = optimizer = scheduler = None
+
+    mlflow.set_experiment(MLFLOW_EXPERIMENT_NAME)
+    nested = mlflow.active_run() is not None
+    try:
+        tokenizer = build_tokenizer()
+        train_dataloader, validation_dataloader = build_tuning_dataloaders(
+            tokenizer,
+            batch_size,
+            path=path,
+            train_subset_size=train_subset_size,
+            validation_subset_size=validation_subset_size,
+        )
+        model = build_model().to(device)
+        optimizer = build_optimizer(model, learning_rate, weight_decay)
+        num_training_steps = calculate_training_steps(train_dataloader, epochs)
+        scheduler = build_scheduler(optimizer, num_training_steps, warmup_ratio)
+
+        with mlflow.start_run(
+            run_name=f"optuna-trial-{trial.number}", nested=nested
+        ):
+            log_experiment_parameters(
+                learning_rate=learning_rate,
+                batch_size=batch_size,
+                weight_decay=weight_decay,
+                epochs=epochs,
+                warmup_ratio=warmup_ratio,
+                train_size=train_subset_size,
+                validation_size=validation_subset_size,
+                device=device,
+            )
+            mlflow.log_param("optuna_trial_number", trial.number)
+
+            def report_epoch(epoch_metrics):
+                mlflow.log_metrics(
+                    {
+                        "train_loss": epoch_metrics["train_loss"],
+                        "validation_accuracy": epoch_metrics["validation_accuracy"],
+                        "validation_macro_f1": epoch_metrics[
+                            "validation_macro_f1"
+                        ],
+                    },
+                    step=epoch_metrics["epoch"],
+                )
+                trial.report(
+                    epoch_metrics["validation_macro_f1"],
+                    step=epoch_metrics["epoch"],
+                )
+                if trial.should_prune():
+                    raise optuna.TrialPruned()
+
+            try:
+                training_results = train_model(
+                    model,
+                    train_dataloader,
+                    validation_dataloader,
+                    optimizer,
+                    epochs,
+                    device,
+                    scheduler=scheduler,
+                    epoch_callback=report_epoch,
+                )
+            except optuna.TrialPruned:
+                mlflow.set_tag("optuna_trial_state", "pruned")
+                pruned = True
+            else:
+                mlflow.log_metric(
+                    "best_validation_macro_f1", training_results["best_macro_f1"]
+                )
+                mlflow.set_tag("optuna_trial_state", "completed")
+                pruned = False
+
+        if pruned:
+            raise optuna.TrialPruned()
+        return training_results["best_macro_f1"]
+    finally:
+        model = tokenizer = optimizer = scheduler = None
+        cleanup_trial_resources()
+
+
+def run_optuna_study(
+    n_trials=10,
+    train_subset_size=TUNING_TRAIN_SIZE,
+    validation_subset_size=TUNING_VALIDATION_SIZE,
+    epochs=2,
+    storage=OPTUNA_STORAGE,
+    path=TRAINING_DATA_PATH,
+):
+    Path("artifacts/optuna").mkdir(parents=True, exist_ok=True)
+    study = optuna.create_study(
+        study_name=OPTUNA_STUDY_NAME,
+        storage=storage,
+        direction="maximize",
+        load_if_exists=True,
+        sampler=optuna.samplers.TPESampler(seed=RANDOM_STATE),
+        pruner=optuna.pruners.MedianPruner(n_startup_trials=2),
+    )
+    study.optimize(
+        lambda trial: optuna_objective(
+            trial,
+            train_subset_size=train_subset_size,
+            validation_subset_size=validation_subset_size,
+            epochs=epochs,
+            path=path,
+        ),
+        n_trials=n_trials,
+        n_jobs=1,
+        gc_after_trial=True,
+    )
+    completed_trials = sum(
+        trial.state == optuna.trial.TrialState.COMPLETE for trial in study.trials
+    )
+    pruned_trials = sum(
+        trial.state == optuna.trial.TrialState.PRUNED for trial in study.trials
+    )
+    return {
+        "best_trial_number": study.best_trial.number,
+        "best_validation_macro_f1": study.best_value,
+        "best_hyperparameters": study.best_params,
+        "completed_trial_count": completed_trials,
+        "pruned_trial_count": pruned_trials,
+    }
 
 
 def run_transformer_experiment(

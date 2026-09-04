@@ -17,3 +17,4 @@ data/processed/
 mlflow.db
 mlruns/
 mlartifacts/
+artifacts/

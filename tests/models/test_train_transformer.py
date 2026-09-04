@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
+import pytest
 import torch
 from torch.utils.data import RandomSampler, SequentialSampler
 
@@ -661,3 +662,201 @@ def test_experiment_preserves_results_when_model_logging_fails(monkeypatch):
     assert results["best_macro_f1"] == 0.7
     assert results["mlflow_run_id"] == "run-id"
     assert results["mlflow_model_logging_error"] == "torchvision"
+
+
+def test_tuning_dataloaders_are_deterministic_stratified_subsets(tmp_path):
+    path = tmp_path / "weak-labels.parquet"
+    rows = [
+        {
+            "cleaned_review_text": f"{label} tuning review {index}",
+            "weak_label": label,
+        }
+        for label in train_transformer.SUPPORTED_LABELS
+        for index in range(20)
+    ]
+    pd.DataFrame(rows).to_parquet(path, index=False)
+
+    first = train_transformer.build_tuning_dataloaders(
+        TinyTokenizer(), 8, path=path, train_subset_size=48, validation_subset_size=12
+    )
+    second = train_transformer.build_tuning_dataloaders(
+        TinyTokenizer(), 8, path=path, train_subset_size=48, validation_subset_size=12
+    )
+
+    assert [len(loader.dataset) for loader in first] == [48, 12]
+    assert first[0].dataset.texts == second[0].dataset.texts
+    assert first[1].dataset.texts == second[1].dataset.texts
+    assert set(first[0].dataset.labels) == set(train_transformer.SUPPORTED_LABELS)
+    assert set(first[1].dataset.labels) == set(train_transformer.SUPPORTED_LABELS)
+
+
+class FakeOptunaRun:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return False
+
+
+class FakeTrial:
+    number = 3
+
+    def __init__(self, prune=False):
+        self.prune = prune
+        self.reports = []
+        self.suggestions = []
+
+    def suggest_float(self, name, low, high, log=False):
+        self.suggestions.append((name, low, high, log))
+        return {"learning_rate": 2e-5, "weight_decay": 0.04, "warmup_ratio": 0.1}[
+            name
+        ]
+
+    def suggest_categorical(self, name, choices):
+        self.suggestions.append((name, choices))
+        return 8
+
+    def report(self, value, step):
+        self.reports.append((value, step))
+
+    def should_prune(self):
+        return self.prune
+
+
+def configure_mock_optuna_objective(monkeypatch, *, prune=False):
+    captured = {}
+    trial = FakeTrial(prune=prune)
+
+    class FakeModel:
+        def to(self, device):
+            return self
+
+    train_loader = SimpleNamespace(dataset=list(range(20)), __len__=lambda: 3)
+    validation_loader = SimpleNamespace(dataset=list(range(5)))
+    monkeypatch.setattr(train_transformer, "set_seed", lambda seed: None)
+    monkeypatch.setattr(
+        train_transformer, "get_device", lambda: torch.device("cpu")
+    )
+    monkeypatch.setattr(train_transformer, "build_tokenizer", object)
+
+    def fake_build_loaders(tokenizer, batch_size, **kwargs):
+        captured["batch_size"] = batch_size
+        captured["subset_sizes"] = (
+            kwargs["train_subset_size"],
+            kwargs["validation_subset_size"],
+        )
+        return train_loader, validation_loader
+
+    monkeypatch.setattr(
+        train_transformer, "build_tuning_dataloaders", fake_build_loaders
+    )
+    monkeypatch.setattr(train_transformer, "build_model", FakeModel)
+
+    def fake_optimizer(model, learning_rate, weight_decay):
+        captured["optimizer"] = (learning_rate, weight_decay)
+        return object()
+
+    monkeypatch.setattr(train_transformer, "build_optimizer", fake_optimizer)
+    monkeypatch.setattr(
+        train_transformer, "calculate_training_steps", lambda loader, epochs: 6
+    )
+
+    def fake_scheduler(optimizer, steps, warmup_ratio):
+        captured["scheduler"] = (steps, warmup_ratio)
+        return object()
+
+    monkeypatch.setattr(train_transformer, "build_scheduler", fake_scheduler)
+    monkeypatch.setattr(train_transformer.mlflow, "set_experiment", lambda name: None)
+    monkeypatch.setattr(train_transformer.mlflow, "active_run", lambda: None)
+    monkeypatch.setattr(
+        train_transformer.mlflow, "start_run", lambda **kwargs: FakeOptunaRun()
+    )
+    monkeypatch.setattr(
+        train_transformer, "log_experiment_parameters", lambda **kwargs: None
+    )
+    monkeypatch.setattr(train_transformer.mlflow, "log_param", lambda *args: None)
+    monkeypatch.setattr(train_transformer.mlflow, "log_metrics", lambda *args, **kw: None)
+    monkeypatch.setattr(train_transformer.mlflow, "log_metric", lambda *args: None)
+    monkeypatch.setattr(train_transformer.mlflow, "set_tag", lambda *args: None)
+    monkeypatch.setattr(train_transformer, "cleanup_trial_resources", lambda: None)
+
+    def fake_train_model(*args, epoch_callback, **kwargs):
+        epoch_callback(
+            {
+                "epoch": 1,
+                "train_loss": 0.4,
+                "validation_accuracy": 0.8,
+                "validation_macro_f1": 0.77,
+            }
+        )
+        return {"best_macro_f1": 0.77}
+
+    monkeypatch.setattr(train_transformer, "train_model", fake_train_model)
+    return trial, captured
+
+
+def test_optuna_objective_returns_macro_f1_and_wires_suggestions(monkeypatch):
+    trial, captured = configure_mock_optuna_objective(monkeypatch)
+
+    score = train_transformer.optuna_objective(
+        trial, train_subset_size=20, validation_subset_size=5, epochs=2
+    )
+
+    assert score == 0.77
+    assert captured == {
+        "batch_size": 8,
+        "subset_sizes": (20, 5),
+        "optimizer": (2e-5, 0.04),
+        "scheduler": (6, 0.1),
+    }
+    assert trial.reports == [(0.77, 1)]
+    assert ("learning_rate", 1e-5, 5e-5, True) in trial.suggestions
+    assert ("batch_size", [8, 16]) in trial.suggestions
+
+
+def test_optuna_objective_propagates_pruning(monkeypatch):
+    trial, _ = configure_mock_optuna_objective(monkeypatch, prune=True)
+
+    with pytest.raises(train_transformer.optuna.TrialPruned):
+        train_transformer.optuna_objective(trial)
+
+
+def test_run_optuna_study_is_persistent_maximized_and_serial(monkeypatch):
+    captured = {}
+    trials = [
+        SimpleNamespace(state=train_transformer.optuna.trial.TrialState.COMPLETE),
+        SimpleNamespace(state=train_transformer.optuna.trial.TrialState.PRUNED),
+    ]
+
+    class FakeStudy:
+        def __init__(self):
+            self.trials = trials
+            self.best_trial = SimpleNamespace(number=4)
+            self.best_value = 0.81
+            self.best_params = {"batch_size": 8}
+
+        def optimize(self, objective, **kwargs):
+            captured["optimize"] = kwargs
+
+    def fake_create_study(**kwargs):
+        captured["study"] = kwargs
+        return FakeStudy()
+
+    monkeypatch.setattr(train_transformer.optuna, "create_study", fake_create_study)
+    monkeypatch.setattr(train_transformer.Path, "mkdir", lambda *args, **kwargs: None)
+
+    summary = train_transformer.run_optuna_study(n_trials=7)
+
+    assert captured["study"]["direction"] == "maximize"
+    assert captured["study"]["load_if_exists"] is True
+    assert captured["study"]["study_name"] == train_transformer.OPTUNA_STUDY_NAME
+    assert captured["study"]["storage"] == train_transformer.OPTUNA_STORAGE
+    assert captured["optimize"]["n_trials"] == 7
+    assert captured["optimize"]["n_jobs"] == 1
+    assert summary == {
+        "best_trial_number": 4,
+        "best_validation_macro_f1": 0.81,
+        "best_hyperparameters": {"batch_size": 8},
+        "completed_trial_count": 1,
+        "pruned_trial_count": 1,
+    }
