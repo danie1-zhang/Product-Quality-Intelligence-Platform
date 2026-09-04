@@ -510,6 +510,12 @@ def test_log_best_model_includes_model_and_tokenizer(monkeypatch):
         {
             "transformers_model": {"model": model, "tokenizer": tokenizer},
             "name": "model",
+            "task": "text-classification",
+            "pip_requirements": [
+                f"mlflow=={train_transformer.version('mlflow')}",
+                f"torch=={train_transformer.version('torch')}",
+                f"transformers=={train_transformer.version('transformers')}",
+            ],
         }
     ]
     assert model_info is expected_info
@@ -587,3 +593,71 @@ def test_experiment_logs_one_model_after_best_state_restoration(monkeypatch):
 
     assert events == ["best_state_restored", "model_logged"]
     assert results["mlflow_model_uri"] == "runs:/run-id/model"
+
+
+def test_experiment_preserves_results_when_model_logging_fails(monkeypatch):
+    class FakeModel:
+        def to(self, device):
+            return self
+
+    class FakeRun:
+        info = SimpleNamespace(run_id="run-id")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+    loader = SimpleNamespace(dataset=list(range(2)))
+    monkeypatch.setattr(train_transformer, "set_seed", lambda seed: None)
+    monkeypatch.setattr(
+        train_transformer, "get_device", lambda: torch.device("cpu")
+    )
+    monkeypatch.setattr(train_transformer, "build_tokenizer", object)
+    monkeypatch.setattr(
+        train_transformer,
+        "build_training_dataloaders",
+        lambda tokenizer, batch_size, path: (loader, loader),
+    )
+    monkeypatch.setattr(train_transformer, "build_model", FakeModel)
+    monkeypatch.setattr(train_transformer, "build_optimizer", lambda *args: object())
+    monkeypatch.setattr(
+        train_transformer, "calculate_training_steps", lambda *args: 2
+    )
+    monkeypatch.setattr(train_transformer, "build_scheduler", lambda *args: object())
+    monkeypatch.setattr(train_transformer.mlflow, "set_experiment", lambda name: None)
+    monkeypatch.setattr(
+        train_transformer.mlflow, "start_run", lambda run_name: FakeRun()
+    )
+    monkeypatch.setattr(
+        train_transformer, "log_experiment_parameters", lambda **kwargs: None
+    )
+    monkeypatch.setattr(train_transformer, "log_training_metrics", lambda results: None)
+    monkeypatch.setattr(
+        train_transformer,
+        "train_model",
+        lambda *args, **kwargs: {
+            "history": [{"epoch": 1}],
+            "best_epoch": 1,
+            "best_macro_f1": 0.7,
+        },
+    )
+    monkeypatch.setattr(
+        train_transformer,
+        "log_best_model",
+        lambda *args: (_ for _ in ()).throw(ModuleNotFoundError("torchvision")),
+    )
+
+    _, results = train_transformer.run_transformer_experiment(
+        learning_rate=5e-5,
+        batch_size=2,
+        weight_decay=0.01,
+        epochs=1,
+        warmup_ratio=0.1,
+    )
+
+    assert results["best_epoch"] == 1
+    assert results["best_macro_f1"] == 0.7
+    assert results["mlflow_run_id"] == "run-id"
+    assert results["mlflow_model_logging_error"] == "torchvision"

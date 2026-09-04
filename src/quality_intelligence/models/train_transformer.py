@@ -1,6 +1,7 @@
 import copy
 import random
 from collections.abc import Sized
+from importlib.metadata import version
 from typing import cast
 
 import mlflow
@@ -321,6 +322,12 @@ def log_best_model(model, tokenizer):
     return mlflow_transformers.log_model(
         transformers_model={"model": model, "tokenizer": tokenizer},
         name="model",
+        task="text-classification",
+        pip_requirements=[
+            f"mlflow=={version('mlflow')}",
+            f"torch=={version('torch')}",
+            f"transformers=={version('transformers')}",
+        ],
     )
 
 
@@ -371,9 +378,13 @@ def run_transformer_experiment(
             scheduler=scheduler,
         )
         log_training_metrics(training_results)
-        model_info = log_best_model(model, tokenizer)
         training_results["mlflow_run_id"] = run.info.run_id
-        training_results["mlflow_model_uri"] = model_info.model_uri
+        try:
+            model_info = log_best_model(model, tokenizer)
+            training_results["mlflow_model_uri"] = model_info.model_uri
+        except Exception as error:  # noqa: BLE001 - persistence must not discard training results
+            training_results["mlflow_model_logging_error"] = str(error)
+            print(f"Best-model artifact logging failed: {error}")
 
     return model, training_results
 
