@@ -2,6 +2,7 @@ import copy
 import gc
 import random
 from collections.abc import Sized
+from dataclasses import asdict, dataclass
 from importlib.metadata import version
 from pathlib import Path
 from typing import cast
@@ -35,6 +36,42 @@ TUNING_TRAIN_SIZE = 20_000
 TUNING_VALIDATION_SIZE = 5_000
 OPTUNA_STUDY_NAME = "distilbert-hyperparameter-tuning"
 OPTUNA_STORAGE = "sqlite:///artifacts/optuna/distilbert_optuna.db"
+
+
+@dataclass(frozen=True)
+class FinalTransformerConfig:
+    model_name: str
+    selected_trial_number: int
+    optuna_best_validation_macro_f1: float
+    learning_rate: float
+    weight_decay: float
+    warmup_ratio: float
+    batch_size: int
+    epochs: int
+    max_length: int
+    random_seed: int
+
+
+FINAL_TRANSFORMER_CONFIG = FinalTransformerConfig(
+    model_name=MODEL_NAME,
+    selected_trial_number=0,
+    optuna_best_validation_macro_f1=0.9766622479790312,
+    learning_rate=1.827226177606625e-05,
+    weight_decay=0.09507143064099162,
+    warmup_ratio=0.10979909127171077,
+    batch_size=8,
+    epochs=2,
+    max_length=MAX_LENGTH,
+    random_seed=RANDOM_STATE,
+)
+
+
+class FinalModelPersistenceError(RuntimeError):
+    """Raised when final training succeeds but its model artifact is unavailable."""
+
+    def __init__(self, message, training_results):
+        super().__init__(message)
+        self.training_results = training_results
 
 
 def set_seed(seed):
@@ -74,22 +111,36 @@ def stratified_subset(texts, labels, subset_size):
     return subset_texts, subset_labels
 
 
-def build_training_dataloaders(tokenizer, batch_size, path=TRAINING_DATA_PATH):
+def build_training_dataloaders(
+    tokenizer,
+    batch_size,
+    path=TRAINING_DATA_PATH,
+    max_length=MAX_LENGTH,
+    random_seed=RANDOM_STATE,
+):
     texts, labels = load_training_data(path)
     train_texts, validation_texts, train_labels, validation_labels = split_data(
         texts, labels
     )
 
-    train_dataset = ReviewDataset(train_texts, train_labels, tokenizer, MAX_LENGTH)
+    train_dataset = ReviewDataset(train_texts, train_labels, tokenizer, max_length)
     validation_dataset = ReviewDataset(
-        validation_texts, validation_labels, tokenizer, MAX_LENGTH
+        validation_texts, validation_labels, tokenizer, max_length
     )
 
     train_dataloader = build_dataloader(
-        train_dataset, tokenizer, batch_size=batch_size, shuffle=True
+        train_dataset,
+        tokenizer,
+        batch_size=batch_size,
+        shuffle=True,
+        seed=random_seed,
     )
     validation_dataloader = build_dataloader(
-        validation_dataset, tokenizer, batch_size=batch_size, shuffle=False
+        validation_dataset,
+        tokenizer,
+        batch_size=batch_size,
+        shuffle=False,
+        seed=random_seed,
     )
     return train_dataloader, validation_dataloader
 
@@ -100,6 +151,8 @@ def build_smoke_training_dataloaders(
     path=TRAINING_DATA_PATH,
     train_subset_size=SMOKE_TRAIN_SIZE,
     validation_subset_size=SMOKE_VALIDATION_SIZE,
+    max_length=MAX_LENGTH,
+    random_seed=RANDOM_STATE,
 ):
     texts, labels = load_training_data(path)
     train_texts, validation_texts, train_labels, validation_labels = split_data(
@@ -112,15 +165,23 @@ def build_smoke_training_dataloaders(
         validation_texts, validation_labels, validation_subset_size
     )
 
-    train_dataset = ReviewDataset(train_texts, train_labels, tokenizer, MAX_LENGTH)
+    train_dataset = ReviewDataset(train_texts, train_labels, tokenizer, max_length)
     validation_dataset = ReviewDataset(
-        validation_texts, validation_labels, tokenizer, MAX_LENGTH
+        validation_texts, validation_labels, tokenizer, max_length
     )
     train_dataloader = build_dataloader(
-        train_dataset, tokenizer, batch_size=batch_size, shuffle=True
+        train_dataset,
+        tokenizer,
+        batch_size=batch_size,
+        shuffle=True,
+        seed=random_seed,
     )
     validation_dataloader = build_dataloader(
-        validation_dataset, tokenizer, batch_size=batch_size, shuffle=False
+        validation_dataset,
+        tokenizer,
+        batch_size=batch_size,
+        shuffle=False,
+        seed=random_seed,
     )
     return train_dataloader, validation_dataloader
 
@@ -323,6 +384,8 @@ def log_experiment_parameters(
     train_size,
     validation_size,
     device,
+    max_length=MAX_LENGTH,
+    random_seed=RANDOM_STATE,
 ):
     mlflow.log_params(
         {
@@ -331,9 +394,9 @@ def log_experiment_parameters(
             "batch_size": batch_size,
             "weight_decay": weight_decay,
             "epochs": epochs,
-            "max_length": MAX_LENGTH,
+            "max_length": max_length,
             "warmup_ratio": warmup_ratio,
-            "random_seed": RANDOM_STATE,
+            "random_seed": random_seed,
             "train_size": train_size,
             "validation_size": validation_size,
             "device": str(device),
@@ -530,15 +593,21 @@ def run_transformer_experiment(
     smoke=False,
     path=TRAINING_DATA_PATH,
     run_name=None,
+    max_length=MAX_LENGTH,
+    random_seed=RANDOM_STATE,
 ):
-    set_seed(RANDOM_STATE)
+    set_seed(random_seed)
     device = get_device()
     tokenizer = build_tokenizer()
     dataloader_builder = (
         build_smoke_training_dataloaders if smoke else build_training_dataloaders
     )
     train_dataloader, validation_dataloader = dataloader_builder(
-        tokenizer, batch_size=batch_size, path=path
+        tokenizer,
+        batch_size=batch_size,
+        path=path,
+        max_length=max_length,
+        random_seed=random_seed,
     )
     model = build_model().to(device)
     optimizer = build_optimizer(model, learning_rate, weight_decay)
@@ -556,6 +625,8 @@ def run_transformer_experiment(
             train_size=len(cast(Sized, train_dataloader.dataset)),
             validation_size=len(cast(Sized, validation_dataloader.dataset)),
             device=device,
+            max_length=max_length,
+            random_seed=random_seed,
         )
         training_results = train_model(
             model,
@@ -576,6 +647,50 @@ def run_transformer_experiment(
             print(f"Best-model artifact logging failed: {error}")
 
     return model, training_results
+
+
+def run_final_transformer_experiment(path=TRAINING_DATA_PATH):
+    """Train the selected configuration on the canonical full weak-label split."""
+    config = FINAL_TRANSFORMER_CONFIG
+    _, training_results = run_transformer_experiment(
+        learning_rate=config.learning_rate,
+        batch_size=config.batch_size,
+        weight_decay=config.weight_decay,
+        epochs=config.epochs,
+        warmup_ratio=config.warmup_ratio,
+        smoke=False,
+        path=path,
+        run_name="distilbert-final-selected-trial-0",
+        max_length=config.max_length,
+        random_seed=config.random_seed,
+    )
+    with mlflow.start_run(run_id=training_results["mlflow_run_id"]):
+        mlflow.log_params(
+            {
+                "selected_optuna_trial": config.selected_trial_number,
+                "optuna_best_validation_macro_f1": (
+                    config.optuna_best_validation_macro_f1
+                ),
+            }
+        )
+
+    if "mlflow_model_uri" not in training_results:
+        persistence_error = training_results.get(
+            "mlflow_model_logging_error", "no MLflow model URI was returned"
+        )
+        raise FinalModelPersistenceError(
+            "Final DistilBERT training succeeded, but final model persistence failed: "
+            f"{persistence_error}",
+            training_results,
+        )
+
+    return {
+        "best_epoch": training_results["best_epoch"],
+        "best_validation_macro_f1": training_results["best_macro_f1"],
+        "mlflow_run_id": training_results["mlflow_run_id"],
+        "mlflow_model_uri": training_results["mlflow_model_uri"],
+        "selected_hyperparameters": asdict(config),
+    }
 
 
 def get_device():

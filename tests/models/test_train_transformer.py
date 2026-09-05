@@ -553,7 +553,10 @@ def test_experiment_logs_one_model_after_best_state_restoration(monkeypatch):
     monkeypatch.setattr(
         train_transformer,
         "build_training_dataloaders",
-        lambda tokenizer, batch_size, path: (train_loader, validation_loader),
+        lambda tokenizer, batch_size, path, **kwargs: (
+            train_loader,
+            validation_loader,
+        ),
     )
     monkeypatch.setattr(train_transformer, "build_model", lambda: model)
     monkeypatch.setattr(train_transformer, "build_optimizer", lambda *args: object())
@@ -619,7 +622,7 @@ def test_experiment_preserves_results_when_model_logging_fails(monkeypatch):
     monkeypatch.setattr(
         train_transformer,
         "build_training_dataloaders",
-        lambda tokenizer, batch_size, path: (loader, loader),
+        lambda tokenizer, batch_size, path, **kwargs: (loader, loader),
     )
     monkeypatch.setattr(train_transformer, "build_model", FakeModel)
     monkeypatch.setattr(train_transformer, "build_optimizer", lambda *args: object())
@@ -860,3 +863,41 @@ def test_run_optuna_study_is_persistent_maximized_and_serial(monkeypatch):
         "completed_trial_count": 1,
         "pruned_trial_count": 1,
     }
+
+
+def test_final_wrapper_reports_model_persistence_failure(monkeypatch):
+    completed_results = {
+        "history": [{"epoch": 1, "validation_macro_f1": 0.98}],
+        "best_epoch": 1,
+        "best_macro_f1": 0.98,
+        "mlflow_run_id": "run-id",
+        "mlflow_model_logging_error": "artifact upload failed",
+    }
+
+    class RunContext:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+    monkeypatch.setattr(
+        train_transformer,
+        "run_transformer_experiment",
+        lambda **kwargs: (object(), completed_results),
+    )
+    monkeypatch.setattr(
+        train_transformer.mlflow, "start_run", lambda run_id: RunContext()
+    )
+    monkeypatch.setattr(train_transformer.mlflow, "log_params", lambda params: None)
+
+    with pytest.raises(
+        train_transformer.FinalModelPersistenceError,
+        match=(
+            "Final DistilBERT training succeeded, but final model persistence failed: "
+            "artifact upload failed"
+        ),
+    ) as error:
+        train_transformer.run_final_transformer_experiment()
+
+    assert error.value.training_results is completed_results
