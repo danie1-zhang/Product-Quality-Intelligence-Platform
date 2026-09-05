@@ -395,6 +395,7 @@ def optuna_objective(
     set_seed(RANDOM_STATE)
     device = get_device()
     model = tokenizer = optimizer = scheduler = None
+    training_results = None
 
     mlflow.set_experiment(MLFLOW_EXPERIMENT_NAME)
     nested = mlflow.active_run() is not None
@@ -468,6 +469,7 @@ def optuna_objective(
 
         if pruned:
             raise optuna.TrialPruned()
+        assert training_results is not None
         return training_results["best_macro_f1"]
     finally:
         model = tokenizer = optimizer = scheduler = None
